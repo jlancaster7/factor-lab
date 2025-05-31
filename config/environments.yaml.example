@@ -1,0 +1,52 @@
+# Environment Configuration
+# =========================
+
+# Development Environment
+development:
+    debug: true
+    cache_enabled: true
+    api_rate_limits: false
+    sample_data_size: 100 # Limit data for faster testing
+
+# Production Environment
+production:
+    debug: false
+    cache_enabled: true
+    api_rate_limits: true
+    sample_data_size: null # Use full datasets
+
+# Testing Environment
+testing:
+    debug: true
+    cache_enabled: false
+    api_rate_limits: false
+    sample_data_size: 50 # Small datasets for unit tests
+
+# Data Provider API Keys (set via environment variables)
+api_keys:
+    # OpenBB Platform API keys
+    openbb:
+        personal_access_token: "your_openbb_token_here"
+        fmp: "your_fmp_api_key_here" # Financial Modeling Prep
+        alpha_vantage: ${ALPHA_VANTAGE_API_KEY}
+        quandl: ${QUANDL_API_KEY}
+        iex: ${IEX_API_KEY}
+
+    # Alternative data providers
+    yahoo_finance:
+        # No API key required for basic usage
+        premium: ${YAHOO_FINANCE_API_KEY} # For premium features
+
+# Database Configuration (optional)
+database:
+    # SQLite (default)
+    sqlite:
+        path: "./data/factor_lab.db"
+
+    # PostgreSQL (for production)
+    postgresql:
+        host: ${DB_HOST}
+        port: ${DB_PORT}
+        username: ${DB_USERNAME}
+        password: ${DB_PASSWORD}
+        database: ${DB_NAME}

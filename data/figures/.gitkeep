@@ -1,0 +1,2 @@
+# This file ensures the figures directory is included in version control
+# while ignoring the actual figure files (which are generated)

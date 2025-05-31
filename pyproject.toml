@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "factor-lab"
+version = "0.1.0"
+description = "Exploratory notebook and Dash workflow for analyzing equity factors"
+authors = ["Josh Lancaster <lancaster.joshua.c@gmail.com>"]
+readme = "README.md"
+packages = [{include = "factor_lab", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+openbb = "^4.4.4"
+yfinance = "^0.2.61"
+pandas = "^2.2.3"
+numpy = "^2.2.6"
+matplotlib = "^3.10.3"
+seaborn = "^0.13.0"
+plotly = ">=5.0.0,<6.0.0"
+cvxpy = "^1.6.5"
+pyportfolioopt = "^1.5.6"
+pyyaml = "^6.0"
+nbformat = "^5.10.4"
+scikit-learn = "^1.6.1"
+pytest = "^8.3.5"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

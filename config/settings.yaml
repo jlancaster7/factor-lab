@@ -1,0 +1,106 @@
+# Factor Lab Configuration Settings
+# ================================
+
+# Data Settings
+data:
+    # Default data provider (yahoo, openbb)
+    default_provider: yahoo
+
+    # Data storage settings
+    storage:
+        cache_dir: "./data/cache"
+        results_dir: "./data/results"
+        figures_dir: "./data/figures"
+
+    # Market data settings
+    market:
+        default_universe:
+            [
+                "AAPL",
+                "MSFT",
+                "GOOGL",
+                "AMZN",
+                "TSLA",
+                "META",
+                "NVDA",
+                "JPM",
+                "JNJ",
+                "V",
+            ]
+        benchmark: "SPY"
+        risk_free_rate: 0.02 # 2% annual
+
+    # Date ranges
+    dates:
+        default_start: "2020-01-01"
+        default_end: null # null = today
+
+# Factor Settings
+factors:
+    # Default lookback periods
+    momentum:
+        short_window: 20
+        long_window: 50
+
+    volatility:
+        window: 30
+
+    mean_reversion:
+        window: 20
+
+    # Factor calculation settings
+    calculation:
+        min_periods: 20
+        handle_missing: "drop" # drop, forward_fill, interpolate
+
+# Portfolio Settings
+portfolio:
+    # Optimization settings
+    optimization:
+        method: "mean_variance" # mean_variance, risk_parity, factor_based
+        max_weight: 0.1 # 10% maximum position size
+        min_weight: 0.0 # No short selling by default
+        target_volatility: 0.15 # 15% annual volatility target
+
+    # Rebalancing
+    rebalancing:
+        frequency: "monthly" # daily, weekly, monthly, quarterly
+
+    # Transaction costs
+    costs:
+        commission: 0.001 # 0.1% per trade
+        bid_ask_spread: 0.0005 # 0.05% spread
+
+# Backtesting Settings
+backtesting:
+    # Performance metrics
+    metrics:
+        benchmark_comparison: true
+        risk_attribution: true
+        factor_exposure: true
+
+    # Reporting
+    reporting:
+        plot_equity_curve: true
+        plot_factor_exposures: true
+        plot_performance_attribution: true
+        save_results: true
+
+# Visualization Settings
+visualization:
+    # Plot settings
+    plots:
+        theme: "plotly_white"
+        width: 1000
+        height: 600
+
+    # Dashboard settings
+    dashboard:
+        auto_refresh: false
+        export_format: "html" # html, png, pdf
+
+# Logging Settings
+logging:
+    level: "INFO" # DEBUG, INFO, WARNING, ERROR
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "./logs/factor_lab.log"
