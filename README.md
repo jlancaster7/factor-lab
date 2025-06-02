@@ -57,7 +57,7 @@ A comprehensive Python framework for quantitative factor investing, portfolio op
 ### Using Poetry (Recommended)
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/factor-lab.git
+git clone https://github.com/jlancaster7/factor-lab.git
 cd factor-lab
 
 # Install dependencies
@@ -68,7 +68,7 @@ poetry shell
 ### Using pip
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/factor-lab.git
+git clone https://github.com/jlancaster7/factor-lab.git
 cd factor-lab
 
 # Create virtual environment
