@@ -452,6 +452,52 @@ class FMPProvider(DataProvider):
             logger.warning(f"No financial ratios data found for {symbol}")
             return None
 
+    def _fetch_historical_prices(
+        self, 
+        symbol: str, 
+        from_date: Optional[str] = None, 
+        to_date: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> Optional[List[Dict]]:
+        """
+        Fetch historical end-of-day price data from FMP.
+        
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        from_date : Optional[str]
+            Start date in YYYY-MM-DD format
+        to_date : Optional[str]
+            End date in YYYY-MM-DD format
+        limit : Optional[int]
+            Maximum number of records to fetch (not used with date range)
+            
+        Returns:
+        --------
+        Optional[List[Dict]]
+            List of price records with date, OHLC, volume
+        """
+        url = f"{self.base_url}/historical-price-full/{symbol}"
+        params = {}
+        
+        # Add date parameters if provided
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+            
+        data = self._make_request(url, params)
+        
+        # FMP returns data in a nested structure
+        if data and isinstance(data, dict) and "historical" in data:
+            historical_data = data["historical"]
+            logger.debug(f"Fetched {len(historical_data)} price records for {symbol}")
+            return historical_data
+        else:
+            logger.warning(f"No historical price data found for {symbol}")
+            return None
+
     # === Story 1.3: Data Validation and Cleaning ===
 
     def _validate_financial_data(self, data: List[Dict], data_type: str) -> List[Dict]:
@@ -992,6 +1038,12 @@ class FMPProvider(DataProvider):
                 trailing_12m["operatingIncome"] / trailing_12m["revenue"]
             )
 
+        # Extract shares outstanding from most recent quarter
+        # Use basic shares (not diluted) for market cap calculation
+        if quarters and quarters[0].get("weightedAverageShsOut"):
+            trailing_12m["shares_outstanding"] = quarters[0]["weightedAverageShsOut"]
+            logger.debug(f"Shares outstanding: {trailing_12m['shares_outstanding']:,.0f}")
+
         return trailing_12m
 
     def _get_smart_ratio_accepted_date(
@@ -1164,27 +1216,29 @@ class FMPProvider(DataProvider):
                     )
 
                     # Calculate ratio based on type
-                    if ratio_name == "pe_ratio" and ttm.get("netIncome"):
-                        # Note: PE ratio also needs market cap, which would come from price data
-                        # For now, we calculate the earnings component
-                        result["ratios"][ratio_name] = {
-                            "earnings_ttm": ttm["netIncome"],
-                            "accepted_date": (
-                                accepted_date.isoformat() if accepted_date else None
-                            ),
-                            "note": "Market cap needed to complete PE calculation",
-                        }
+                    if ratio_name == "pe_ratio":
+                        net_income = ttm.get("netIncome")
+                        shares_out = ttm.get("shares_outstanding")
+                        
+                        if net_income and shares_out and net_income > 0:
+                            market_cap = self._calculate_market_cap(symbol, as_of_date, shares_out)
+                            if market_cap:
+                                ratio_value = market_cap / net_income
+                                logger.debug(
+                                    f"PE calculation: Market Cap ${market_cap:,.0f} / Net Income ${net_income:,.0f} = {ratio_value:.2f}"
+                                )
 
-                    elif ratio_name == "pb_ratio" and balance_sheet.get(
-                        "totalStockholdersEquity"
-                    ):
-                        result["ratios"][ratio_name] = {
-                            "book_value": balance_sheet["totalStockholdersEquity"],
-                            "accepted_date": (
-                                accepted_date.isoformat() if accepted_date else None
-                            ),
-                            "note": "Market cap needed to complete PB calculation",
-                        }
+                    elif ratio_name == "pb_ratio":
+                        book_value = balance_sheet.get("totalStockholdersEquity")
+                        shares_out = ttm.get("shares_outstanding")
+                        
+                        if book_value and shares_out and book_value > 0:
+                            market_cap = self._calculate_market_cap(symbol, as_of_date, shares_out)
+                            if market_cap:
+                                ratio_value = market_cap / book_value
+                                logger.debug(
+                                    f"PB calculation: Market Cap ${market_cap:,.0f} / Book Value ${book_value:,.0f} = {ratio_value:.2f}"
+                                )
 
                     elif ratio_name == "debt_to_equity":
                         total_debt = balance_sheet.get("totalDebt", 0)
@@ -1255,6 +1309,91 @@ class FMPProvider(DataProvider):
 
         return result
 
+    def _calculate_market_cap(
+        self,
+        symbol: str,
+        as_of_date: Union[str, datetime],
+        shares_outstanding: float
+    ) -> Optional[float]:
+        """
+        Calculate market capitalization using price and shares outstanding.
+        
+        This method fetches the stock price as of the given date and multiplies
+        by shares outstanding to get market cap. Handles weekends/holidays by
+        using the most recent trading day.
+        
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        as_of_date : Union[str, datetime]
+            Date for market cap calculation
+        shares_outstanding : float
+            Number of shares outstanding
+            
+        Returns:
+        --------
+        Optional[float]
+            Market capitalization or None if price unavailable
+        """
+        try:
+            # Convert as_of_date to string format for API
+            if isinstance(as_of_date, datetime):
+                as_of_date_str = as_of_date.strftime("%Y-%m-%d")
+            else:
+                as_of_date_str = str(as_of_date)
+            
+            # Fetch price for a small window around the date (handle weekends)
+            # Get 5 days of data to ensure we have at least one trading day
+            from_date = pd.to_datetime(as_of_date_str) - timedelta(days=5)
+            from_date_str = from_date.strftime("%Y-%m-%d")
+            
+            logger.debug(f"Fetching price for {symbol} around {as_of_date_str}")
+            
+            # Fetch historical prices
+            price_data = self._fetch_historical_prices(
+                symbol,
+                from_date=from_date_str,
+                to_date=as_of_date_str
+            )
+            
+            if not price_data:
+                logger.warning(f"No price data available for {symbol} as of {as_of_date_str}")
+                return None
+            
+            # Convert to DataFrame for easier manipulation
+            price_df = pd.DataFrame(price_data)
+            price_df['date'] = pd.to_datetime(price_df['date'])
+            price_df.set_index('date', inplace=True)
+            price_df.sort_index(inplace=True)
+            
+            # Get the most recent price up to and including as_of_date
+            as_of_dt = pd.to_datetime(as_of_date_str)
+            valid_prices = price_df[price_df.index <= as_of_dt]
+            
+            if valid_prices.empty:
+                logger.warning(f"No price data available for {symbol} on or before {as_of_date_str}")
+                return None
+            
+            # Use the most recent available price (handles weekends/holidays)
+            latest_price_row = valid_prices.iloc[-1]
+            price_date = valid_prices.index[-1]
+            price = latest_price_row['close']  # Use closing price
+            
+            # Calculate market cap
+            market_cap = price * shares_outstanding
+            
+            logger.debug(
+                f"Market cap for {symbol}: ${price:.2f} × {shares_outstanding:,.0f} = ${market_cap:,.0f} "
+                f"(price date: {price_date.strftime('%Y-%m-%d')})"
+            )
+            
+            return market_cap
+            
+        except Exception as e:
+            logger.error(f"Error calculating market cap for {symbol}: {e}")
+            return None
+
     # === Epic 5: Public API for Notebook Integration ===
     
     def get_fundamental_factors(
@@ -1262,7 +1401,8 @@ class FMPProvider(DataProvider):
         symbols: Union[str, List[str]],
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
-        frequency: str = "daily"
+        frequency: str = "daily",
+        calculation_frequency: str = "W"
     ) -> Dict[str, pd.DataFrame]:
         """
         Get fundamental factor data for multiple symbols in notebook-compatible format.
@@ -1280,13 +1420,17 @@ class FMPProvider(DataProvider):
             End date for data fetch
         frequency : str
             Data frequency ('daily' or 'quarterly'). Daily will forward-fill quarterly data.
+        calculation_frequency : str
+            How often to calculate ratios: 'D' (daily), 'W' (weekly), 'M' (monthly)
+            Default is 'W' for weekly calculations to balance accuracy and efficiency
             
         Returns:
         --------
         Dict[str, pd.DataFrame]
             Dictionary with symbol as key and DataFrame with fundamental factors as value.
-            Each DataFrame has columns: PE_ratio, PB_ratio, ROE, Debt_Equity
-            Index is DatetimeIndex with requested frequency.
+            Each DataFrame has columns:
+            - PE_ratio, PB_ratio, ROE, Debt_Equity: Financial ratios
+            Index is DatetimeIndex with trading days only.
         """
         if isinstance(symbols, str):
             symbols = [symbols]
@@ -1305,139 +1449,266 @@ class FMPProvider(DataProvider):
             try:
                 logger.info(f"Processing fundamental data for {symbol}")
                 
-                # IMPROVED APPROACH: Fetch actual reporting dates first
-                # This handles non-standard fiscal years correctly
+                # Step 1: Get trading days from price data
+                logger.debug(f"Fetching price data to determine trading days for {symbol}")
+                price_data = self.get_prices(
+                    symbols=[symbol],
+                    start_date=str(start_date),
+                    end_date=str(end_date),
+                    price_type="close"
+                )
                 
-                # Fetch recent income statements to understand reporting pattern
+                if price_data.empty:
+                    logger.warning(f"No price data available for {symbol}")
+                    fundamental_data[symbol] = pd.DataFrame()
+                    continue
+                
+                trading_days = price_data.index
+                logger.debug(f"Found {len(trading_days)} trading days for {symbol}")
+                
+                # Step 2: Get quarterly reporting dates and build fundamental timeline
                 sample_statements = self._fetch_income_statement(
                     symbol, 
-                    limit=20,  # Get enough to cover our date range
+                    limit=20,
                     period="quarter"
                 )
                 
-                quarterly_data = []
+                if not sample_statements:
+                    logger.warning(f"No quarterly statements found for {symbol}")
+                    fundamental_data[symbol] = pd.DataFrame()
+                    continue
                 
-                if sample_statements:
-                    # Validate and extract actual reporting dates
-                    validated_statements = self._validate_financial_data(
-                        sample_statements, 
-                        "income_statement"
-                    )
-                    
-                    # Extract fiscal period dates (not acceptedDates)
-                    fiscal_dates = []
-                    for statement in validated_statements:
-                        if 'date' in statement:
-                            fiscal_date = pd.to_datetime(statement['date'])
-                            fiscal_dates.append(fiscal_date)
-                    
-                    # Sort dates and filter to our range
-                    fiscal_dates = sorted(fiscal_dates, reverse=True)
-                    relevant_dates = [
-                        d for d in fiscal_dates 
-                        if start_date <= d <= end_date
-                    ]
-                    
-                    logger.info(f"Found {len(relevant_dates)} quarters for {symbol} in date range")
-                    
-                    # Fetch data for each actual reporting date
-                    for quarter_date in relevant_dates:
-                        try:
-                            # Calculate financial ratios for this point in time
-                            ratios_result = self._calculate_financial_ratios_with_timing(
-                                symbol,
-                                quarter_date,
-                                ratios_to_calculate=[
-                                    "pe_ratio", "pb_ratio", "roe", "roa", 
-                                    "debt_to_equity", "current_ratio", 
-                                    "operating_margin", "net_margin"
-                                ]
-                            )
-                            
-                            # Extract ratio values
-                            ratios = ratios_result.get("ratios", {})
-                            
-                            # Build row for this quarter
-                            quarter_row = {
-                                'date': quarter_date,
-                                'PE_ratio': None,  # Will need market cap data
-                                'PB_ratio': None,  # Will need market cap data
-                                'ROE': ratios.get('roe', {}).get('value') if isinstance(ratios.get('roe'), dict) else None,
-                                'Debt_Equity': ratios.get('debt_to_equity', {}).get('value') if isinstance(ratios.get('debt_to_equity'), dict) else None
-                            }
-                            
-                            # For now, use placeholder values for PE and PB if we have the components
-                            # In production, these would come from market data integration
-                            if 'pe_ratio' in ratios and isinstance(ratios['pe_ratio'], dict):
-                                earnings_ttm = ratios['pe_ratio'].get('earnings_ttm')
-                                if earnings_ttm and earnings_ttm > 0:
-                                    # Placeholder: assume P/E of 15-25 range for tech stocks
-                                    quarter_row['PE_ratio'] = np.random.uniform(15, 25)
-                                    
-                            if 'pb_ratio' in ratios and isinstance(ratios['pb_ratio'], dict):
-                                book_value = ratios['pb_ratio'].get('book_value')
-                                if book_value and book_value > 0:
-                                    # Placeholder: assume P/B of 2-5 range
-                                    quarter_row['PB_ratio'] = np.random.uniform(2, 5)
-                            
-                            quarterly_data.append(quarter_row)
-                            
-                        except Exception as e:
-                            logger.warning(f"Could not fetch data for {symbol} at {quarter_date}: {e}")
-                            # Add empty row for this quarter
-                            quarterly_data.append({
-                                'date': quarter_date,
-                                'PE_ratio': None,
-                                'PB_ratio': None,
-                                'ROE': None,
-                                'Debt_Equity': None
+                # Build fundamental data timeline
+                fundamental_timeline = []
+                validated_statements = self._validate_financial_data(
+                    sample_statements, 
+                    "income_statement"
+                )
+                
+                # Get all relevant quarters
+                for statement in validated_statements:
+                    if 'date' in statement and 'acceptedDate' in statement:
+                        quarter_end = pd.to_datetime(statement['date'])
+                        report_date = pd.to_datetime(statement['acceptedDate'])
+                        
+                        # Only include quarters that could affect our date range
+                        if report_date <= end_date + timedelta(days=90):
+                            fundamental_timeline.append({
+                                'quarter_end': quarter_end,
+                                'report_date': report_date
                             })
                 
-                else:
-                    # No sample statements found - log and create empty structure
-                    logger.warning(f"No quarterly statements found for {symbol}")
+                # Sort by report date
+                fundamental_timeline.sort(key=lambda x: x['report_date'])
+                logger.info(f"Found {len(fundamental_timeline)} quarters in timeline for {symbol}")
+                
+                # Step 3: Determine calculation dates
+                calculation_dates = set()
+                
+                # Add regular intervals based on calculation_frequency
+                if calculation_frequency == 'D':
+                    # Daily calculations (expensive!)
+                    calculation_dates.update(trading_days)
+                elif calculation_frequency == 'W':
+                    # Weekly - every Friday that's a trading day
+                    weekly_dates = trading_days[trading_days.weekday == 4]
+                    calculation_dates.update(weekly_dates)
+                elif calculation_frequency == 'M':
+                    # Monthly - last trading day of each month
+                    monthly_dates = price_data.resample('ME').last().index
+                    calculation_dates.update(monthly_dates)
+                
+                # Include key dates for more accurate transitions
+                for item in fundamental_timeline:
+                    # Add quarter end dates if they're trading days
+                    if item['quarter_end'] in trading_days:
+                        calculation_dates.add(item['quarter_end'])
                     
-                # Convert to DataFrame
-                if quarterly_data:
-                    df = pd.DataFrame(quarterly_data)
+                    # Add report dates if they're trading days
+                    if item['report_date'] in trading_days:
+                        calculation_dates.add(item['report_date'])
+                
+                calculation_dates = sorted(calculation_dates)
+                logger.debug(f"Will calculate ratios for {len(calculation_dates)} dates")
+                
+                # Step 4: Get TTM data for each quarter
+                quarter_fundamentals = {}
+                for timeline_item in fundamental_timeline:
+                    quarter_date = timeline_item['quarter_end']
+                    if start_date - timedelta(days=365) <= quarter_date <= end_date:
+                        try:
+                            ttm_data = self._get_trailing_12m_data(symbol, quarter_date)
+                            if ttm_data["metadata"]["calculation_successful"]:
+                                quarter_fundamentals[quarter_date] = {
+                                    'ttm_data': ttm_data,
+                                    'report_date': timeline_item['report_date']
+                                }
+                        except Exception as e:
+                            logger.warning(f"Could not get TTM data for {symbol} Q{quarter_date}: {e}")
+                
+                # Step 5: Calculate ratios for each calculation date
+                daily_data = []
+                
+                for calc_date in calculation_dates:
+                    # Find applicable quarter (most recent reported as of calc_date)
+                    applicable_quarter = None
+                    applicable_quarter_date = None
+                    
+                    for quarter_date, quarter_info in quarter_fundamentals.items():
+                        if quarter_info['report_date'].date() <= calc_date.date():
+                            if applicable_quarter is None or quarter_info['report_date'] > applicable_quarter['report_date']:
+                                applicable_quarter = quarter_info
+                                applicable_quarter_date = quarter_date
+                    
+                    if applicable_quarter:
+                        try:
+                            # Calculate ratios using this quarter's fundamentals
+                            ttm = applicable_quarter['ttm_data']['trailing_12m']
+                            bs = applicable_quarter['ttm_data']['balance_sheet']
+                            
+                            # Get shares outstanding
+                            shares = ttm.get('shares_outstanding')
+                            
+                            # Calculate market cap for current date
+                            market_cap = None
+                            if shares and not pd.isna(shares):
+                                market_cap = self._calculate_market_cap(symbol, calc_date, shares)
+                            
+                            # Calculate ratios
+                            pe_ratio = None
+                            if market_cap and ttm.get('netIncome') and ttm['netIncome'] > 0:
+                                pe_ratio = market_cap / ttm['netIncome']
+                            
+                            pb_ratio = None
+                            if market_cap and bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] > 0:
+                                pb_ratio = market_cap / bs['totalStockholdersEquity']
+                            
+                            roe = None
+                            if ttm.get('netIncome') and bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] > 0:
+                                roe = ttm['netIncome'] / bs['totalStockholdersEquity']
+                            
+                            debt_equity = None
+                            if bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] != 0:
+                                debt_equity = bs.get('totalDebt', 0) / bs['totalStockholdersEquity']
+                            
+                            # Build row
+                            row = {
+                                'date': calc_date,
+                                'PE_ratio': pe_ratio,
+                                'PB_ratio': pb_ratio,
+                                'ROE': roe,
+                                'Debt_Equity': debt_equity
+                            }
+                            
+                            daily_data.append(row)
+                            
+                        except Exception as e:
+                            logger.debug(f"Could not calculate ratios for {symbol} on {calc_date}: {e}")
+                
+                # Step 6: Convert to DataFrame and reindex to all trading days
+                if daily_data:
+                    df = pd.DataFrame(daily_data)
                     df.set_index('date', inplace=True)
                     
-                    # Handle frequency conversion
-                    if frequency == "daily":
-                        # Create daily date range
-                        daily_dates = pd.date_range(
-                            start=start_date,
-                            end=end_date,
-                            freq='D'
-                        )
-                        
-                        # Reindex to daily and forward fill
-                        df = df.reindex(daily_dates, method='ffill')
-                        
-                        # Also backward fill for any leading NaNs
-                        df = df.bfill()
+                    # Reindex to ALL trading days and forward-fill
+                    df = df.reindex(trading_days, method='ffill')
+                    
+                    # Also backward fill for any leading NaNs
+                    df = df.bfill()
                     
                     fundamental_data[symbol] = df
                 else:
-                    logger.warning(f"No fundamental data found for {symbol}")
-                    # Return empty DataFrame with expected structure
-                    empty_df = pd.DataFrame(
-                        columns=['PE_ratio', 'PB_ratio', 'ROE', 'Debt_Equity'],
-                        index=pd.date_range(start=start_date, end=end_date, freq='D' if frequency == 'daily' else 'QE')
-                    )
-                    fundamental_data[symbol] = empty_df
+                    logger.warning(f"No fundamental data calculated for {symbol}")
+                    fundamental_data[symbol] = pd.DataFrame()
                     
             except Exception as e:
                 logger.error(f"Error fetching fundamental data for {symbol}: {e}")
-                # Return empty DataFrame with expected structure
-                empty_df = pd.DataFrame(
-                    columns=['PE_ratio', 'PB_ratio', 'ROE', 'Debt_Equity'],
-                    index=pd.date_range(start=start_date, end=end_date, freq='D' if frequency == 'daily' else 'QE')
-                )
-                fundamental_data[symbol] = empty_df
+                fundamental_data[symbol] = pd.DataFrame()
         
         logger.info(f"Completed fundamental factor fetch for {len(fundamental_data)} symbols")
         return fundamental_data
+
+    def get_prices(
+        self,
+        symbols: Union[str, List[str]],
+        start_date: str,
+        end_date: str,
+        price_type: str = "close"
+    ) -> pd.DataFrame:
+        """
+        Get historical price data in DataManager-compatible format.
+        
+        Parameters:
+        -----------
+        symbols : Union[str, List[str]]
+            Single symbol or list of symbols
+        start_date : str
+            Start date in YYYY-MM-DD format
+        end_date : str
+            End date in YYYY-MM-DD format
+        price_type : str
+            Type of price ('open', 'high', 'low', 'close', 'adjClose', 'vwap')
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Price data with dates as index and symbols as columns
+        """
+        if isinstance(symbols, str):
+            symbols = [symbols]
+            
+        logger.info(f"Fetching price data for {len(symbols)} symbols from {start_date} to {end_date}")
+        
+        price_data = {}
+        
+        for symbol in symbols:
+            try:
+                # Fetch historical prices
+                historical_data = self._fetch_historical_prices(
+                    symbol, 
+                    from_date=start_date,
+                    to_date=end_date
+                )
+                
+                if historical_data:
+                    # Convert to DataFrame
+                    df = pd.DataFrame(historical_data)
+                    
+                    # Parse dates and set as index
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    
+                    # Sort by date (FMP returns newest first)
+                    df.sort_index(inplace=True)
+                    
+                    # Extract requested price type
+                    if price_type in df.columns:
+                        price_data[symbol] = df[price_type]
+                    else:
+                        logger.warning(f"Price type '{price_type}' not found for {symbol}, using 'close'")
+                        price_data[symbol] = df['close']
+                else:
+                    logger.warning(f"No price data found for {symbol}")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching price data for {symbol}: {e}")
+        
+        # Combine all price series into a single DataFrame
+        if price_data:
+            prices_df = pd.DataFrame(price_data)
+            
+            # Fill missing dates with NaN (align all series)
+            all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            prices_df = prices_df.reindex(all_dates)
+            
+            # Forward fill missing values (weekends/holidays)
+            prices_df = prices_df.ffill()
+            
+            logger.info(f"Successfully fetched price data: {prices_df.shape}")
+            return prices_df
+        else:
+            logger.warning("No price data fetched")
+            return pd.DataFrame()
 
 
 class DataManager:
