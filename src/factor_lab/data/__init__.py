@@ -359,44 +359,82 @@ class FMPProvider(DataProvider):
     # === Story 1.2: Raw Data Fetching Methods ===
 
     def _fetch_income_statement(
-        self, symbol: str, limit: int = 5
+        self, symbol: str, limit: int = 5, period: str = "annual"
     ) -> Optional[List[Dict]]:
-        """Fetch income statement data for a symbol."""
+        """Fetch income statement data for a symbol.
+
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        limit : int
+            Number of records to fetch
+        period : str
+            Period type - options may include 'annual', 'quarter', or specific quarters like 'Q1', 'Q2', etc.
+        """
         url = f"{self.base_url}/income-statement/{symbol}"
-        params = {"limit": limit}
+        params = {"limit": limit, "period": period}
 
         data = self._make_request(url, params)
         if data and isinstance(data, list):
-            logger.debug(f"Fetched {len(data)} income statement records for {symbol}")
+            logger.debug(
+                f"Fetched {len(data)} {period} income statement records for {symbol}"
+            )
             return data
         else:
-            logger.warning(f"No income statement data found for {symbol}")
+            logger.warning(f"No {period} income statement data found for {symbol}")
             return None
 
-    def _fetch_balance_sheet(self, symbol: str, limit: int = 5) -> Optional[List[Dict]]:
-        """Fetch balance sheet data for a symbol."""
+    def _fetch_balance_sheet(
+        self, symbol: str, limit: int = 5, period: str = "annual"
+    ) -> Optional[List[Dict]]:
+        """Fetch balance sheet data for a symbol.
+
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        limit : int
+            Number of records to fetch
+        period : str
+            Period type - options may include 'annual', 'quarter', or specific quarters like 'Q1', 'Q2', etc.
+        """
         url = f"{self.base_url}/balance-sheet-statement/{symbol}"
-        params = {"limit": limit}
+        params = {"limit": limit, "period": period}
 
         data = self._make_request(url, params)
         if data and isinstance(data, list):
-            logger.debug(f"Fetched {len(data)} balance sheet records for {symbol}")
+            logger.debug(
+                f"Fetched {len(data)} {period} balance sheet records for {symbol}"
+            )
             return data
         else:
-            logger.warning(f"No balance sheet data found for {symbol}")
+            logger.warning(f"No {period} balance sheet data found for {symbol}")
             return None
 
-    def _fetch_cash_flow(self, symbol: str, limit: int = 5) -> Optional[List[Dict]]:
-        """Fetch cash flow statement data for a symbol."""
+    def _fetch_cash_flow(
+        self, symbol: str, limit: int = 5, period: str = "annual"
+    ) -> Optional[List[Dict]]:
+        """Fetch cash flow statement data for a symbol.
+
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        limit : int
+            Number of records to fetch
+        period : str
+            Period type - options may include 'annual', 'quarter', or specific quarters like 'Q1', 'Q2', etc.
+        """
         url = f"{self.base_url}/cash-flow-statement/{symbol}"
-        params = {"limit": limit}
+        params = {"limit": limit, "period": period}
 
         data = self._make_request(url, params)
         if data and isinstance(data, list):
-            logger.debug(f"Fetched {len(data)} cash flow records for {symbol}")
+            logger.debug(f"Fetched {len(data)} {period} cash flow records for {symbol}")
             return data
         else:
-            logger.warning(f"No cash flow data found for {symbol}")
+            logger.warning(f"No {period} cash flow data found for {symbol}")
             return None
 
     def _fetch_financial_ratios(
@@ -606,6 +644,616 @@ class FMPProvider(DataProvider):
             )
 
         return quality_stats
+
+    # === Story 2.1: Accepted Date Handling ===
+    def _filter_by_accepted_date(
+        self,
+        data: List[Dict],
+        as_of_date: Union[str, datetime],
+        use_fiscal_date_fallback: bool = True,
+        fiscal_lag_days: int = 75,
+    ) -> List[Dict]:
+        """
+        Filter financial statements by acceptedDate to prevent look-ahead bias.
+
+        This is critical for historical factor analysis - we can only use data that
+        was publicly available (accepted/filed) as of the analysis date.
+
+        For data without acceptedDate (e.g., calculated ratios), optionally uses
+        fiscal period date + lag as a conservative estimate.
+
+        Parameters:
+        -----------
+        data : List[Dict]
+            List of financial statement records (validated)
+        as_of_date : Union[str, datetime]
+            The point-in-time date for analysis (YYYY-MM-DD or datetime)
+        use_fiscal_date_fallback : bool
+            If True, use fiscal date + lag for records without acceptedDate
+        fiscal_lag_days : int
+            Days to add to fiscal date as filing lag estimate (default: 75 days)
+
+        Returns:
+        --------
+        List[Dict]
+            Filtered records where acceptedDate <= as_of_date (or fiscal_date + lag <= as_of_date)
+        """
+        if not data:
+            return []
+
+        # Parse as_of_date to datetime for comparison
+        if isinstance(as_of_date, str):
+            try:
+                as_of_date = pd.to_datetime(as_of_date)
+            except Exception as e:
+                logger.error(f"Invalid as_of_date format: {as_of_date} - {e}")
+                return []
+        elif isinstance(as_of_date, datetime):
+            as_of_date = pd.to_datetime(as_of_date)
+        else:
+            logger.error(
+                f"as_of_date must be string or datetime, got {type(as_of_date)}"
+            )
+            return []
+        filtered_data = []
+        filtered_count = 0
+        no_accepted_date_count = 0
+        fallback_used_count = 0
+
+        for record in data:
+            # Check if acceptedDate exists and is valid
+            accepted_date = record.get("acceptedDate")
+
+            if not accepted_date:
+                no_accepted_date_count += 1
+
+                # Try fallback using fiscal date + lag
+                if use_fiscal_date_fallback and record.get("date"):
+                    try:
+                        fiscal_date = pd.to_datetime(record["date"])
+                        estimated_accepted_date = fiscal_date + pd.Timedelta(
+                            days=fiscal_lag_days
+                        )
+
+                        if estimated_accepted_date <= as_of_date:
+                            filtered_data.append(record)
+                            fallback_used_count += 1
+                            logger.debug(
+                                f"Used fiscal date fallback: {record.get('symbol', 'Unknown')} "
+                                f"fiscal={fiscal_date.strftime('%Y-%m-%d')} + {fiscal_lag_days}d = "
+                                f"estimated_accepted={estimated_accepted_date.strftime('%Y-%m-%d')}"
+                            )
+                        else:
+                            filtered_count += 1
+                            logger.debug(
+                                f"Filtered by fallback: estimated_accepted={estimated_accepted_date.strftime('%Y-%m-%d')} > "
+                                f"as_of_date={as_of_date.strftime('%Y-%m-%d')}"
+                            )
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Could not apply fiscal date fallback: {e}")
+
+                logger.debug(
+                    f"Record missing acceptedDate and no fallback: {record.get('symbol', 'Unknown')} {record.get('date', 'Unknown')}"
+                )
+                continue
+
+            # Ensure acceptedDate is pandas Timestamp for comparison
+            if not isinstance(accepted_date, pd.Timestamp):
+                try:
+                    accepted_date = pd.to_datetime(accepted_date)
+                except Exception as e:
+                    logger.warning(
+                        f"Could not parse acceptedDate: {accepted_date} - {e}"
+                    )
+                    continue
+
+            # Apply look-ahead bias filter: acceptedDate <= as_of_date
+            if accepted_date <= as_of_date:
+                filtered_data.append(record)
+            else:
+                filtered_count += 1
+                logger.debug(
+                    f"Filtered out look-ahead data: {record.get('symbol', 'Unknown')} "
+                    f"fiscal_period={record.get('date', 'Unknown')} "
+                    f"acceptedDate={accepted_date.strftime('%Y-%m-%d')} > "
+                    f"as_of_date={as_of_date.strftime('%Y-%m-%d')}"
+                )
+
+        # Log filtering results
+        original_count = len(data)
+        final_count = len(filtered_data)
+        logger.info(
+            f"Look-ahead bias filtering: {original_count} -> {final_count} records "
+            f"(filtered: {filtered_count}, missing acceptedDate: {no_accepted_date_count})"
+        )
+
+        if final_count == 0 and original_count > 0:
+            logger.warning(
+                f"No records available as of {as_of_date.strftime('%Y-%m-%d')}. "
+                f"Earliest acceptedDate might be after as_of_date."
+            )
+
+        return filtered_data
+
+    # === Story 2.2: Trailing 12-Month Calculations + Smart acceptedDate Mapping ===
+
+    def _get_trailing_12m_data(
+        self,
+        symbol: str,
+        as_of_date: Union[str, datetime],
+        include_balance_sheet: bool = True,
+        min_quarters: int = 4,
+    ) -> Dict[str, Any]:
+        """
+        Get trailing 12-month financial data for a symbol as of a specific date.
+
+        This method fetches and aggregates 4 quarters of income statement data
+        and the most recent balance sheet data, all filtered by acceptedDate
+        to prevent look-ahead bias.
+
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol (e.g., 'AAPL')
+        as_of_date : Union[str, datetime]
+            Point-in-time analysis date
+        include_balance_sheet : bool
+            Whether to include balance sheet data for point-in-time metrics
+        min_quarters : int
+            Minimum number of quarters required (default: 4)
+
+        Returns:
+        --------
+        Dict[str, Any]
+            Dictionary containing:
+            - 'trailing_12m': Dict with summed income statement items
+            - 'balance_sheet': Dict with most recent balance sheet data (if requested)
+            - 'metadata': Dict with calculation metadata
+        """
+        logger.info(f"Calculating trailing 12M data for {symbol} as of {as_of_date}")
+
+        result = {
+            "trailing_12m": {},
+            "balance_sheet": {},
+            "metadata": {
+                "symbol": symbol,
+                "as_of_date": str(as_of_date),
+                "quarters_used": 0,
+                "balance_sheet_date": None,
+                "calculation_successful": False,
+            },
+        }
+
+        try:
+            # Parse as_of_date for validation
+            if isinstance(as_of_date, str):
+                as_of_dt = pd.to_datetime(as_of_date)
+            elif isinstance(as_of_date, datetime):
+                as_of_dt = pd.to_datetime(as_of_date)
+            else:
+                logger.error(f"Invalid as_of_date type: {type(as_of_date)}")
+                return result
+
+            # Prevent future analysis dates (no factor analysis in the future!)
+            current_date = pd.to_datetime(datetime.now().date())
+            if as_of_dt > current_date:
+                logger.warning(
+                    f"Future analysis date detected: {as_of_dt.strftime('%Y-%m-%d')} > "
+                    f"current date {current_date.strftime('%Y-%m-%d')}. "
+                    f"Factor analysis cannot be performed for future dates."
+                )
+                result["metadata"]["calculation_successful"] = False
+                return result
+            # Fetch income statement data (get more quarters to ensure sufficient historical data)
+            # API returns most recent quarters regardless of as_of_date, so we need more data
+            # to ensure we have enough quarters after acceptedDate filtering
+            income_data = self._fetch_income_statement(
+                symbol, limit=20, period="quarter"
+            )
+            if not income_data:
+                logger.warning(f"No quarter income statement data found for {symbol}")
+                return result
+
+            logger.debug(
+                f"Fetched {len(income_data)} raw quarterly records for {symbol}"
+            )
+
+            # Validate and filter by acceptedDate
+            validated_income = self._validate_financial_data(
+                income_data, "income_statement"
+            )
+            logger.debug(
+                f"Validated {len(validated_income)} quarterly records for {symbol}"
+            )
+
+            filtered_income = self._filter_by_accepted_date(
+                validated_income, as_of_date
+            )
+            logger.debug(
+                f"After acceptedDate filtering: {len(filtered_income)} quarterly records for {symbol}"
+            )
+
+            # Check if we have sufficient quarters after filtering
+            if len(filtered_income) < min_quarters:
+                logger.warning(
+                    f"Insufficient quarterly data for {symbol}: {len(filtered_income)}/{min_quarters} quarters available as of {as_of_date}"
+                )
+                result["metadata"]["quarters_used"] = len(filtered_income)
+                result["metadata"]["calculation_successful"] = False
+                return result
+
+            # Take the 4 most recent quarters (already sorted by date descending from API)
+            recent_quarters = filtered_income[:min_quarters]
+            result["metadata"]["quarters_used"] = len(recent_quarters)
+
+            # Sum income statement items over 4 quarters
+            trailing_12m = self._sum_income_statement_quarters(recent_quarters)
+            result["trailing_12m"] = trailing_12m
+
+            # Get balance sheet data if requested
+            if include_balance_sheet:
+                # Fetch more balance sheet records to account for acceptedDate filtering
+                # Use same limit as income statement to ensure sufficient data after filtering
+                balance_data = self._fetch_balance_sheet(
+                    symbol, limit=20, period="quarter"
+                )
+                if balance_data:
+                    validated_balance = self._validate_financial_data(
+                        balance_data, "balance_sheet"
+                    )
+                    filtered_balance = self._filter_by_accepted_date(
+                        validated_balance, as_of_date
+                    )
+
+                    if filtered_balance:
+                        # Use most recent balance sheet
+                        result["balance_sheet"] = filtered_balance[0]
+                        result["metadata"]["balance_sheet_date"] = filtered_balance[
+                            0
+                        ].get("date")
+                        logger.debug(
+                            f"Using balance sheet dated {filtered_balance[0].get('date')} "
+                            f"(accepted: {filtered_balance[0].get('acceptedDate')}) for {symbol}"
+                        )
+                    else:
+                        logger.warning(
+                            f"No balance sheet data available for {symbol} as of {as_of_date}"
+                        )
+                else:
+                    logger.warning(f"Failed to fetch balance sheet data for {symbol}")
+
+            result["metadata"]["calculation_successful"] = True
+            logger.info(f"Successfully calculated trailing 12M data for {symbol}")
+
+        except Exception as e:
+            logger.error(f"Error calculating trailing 12M data for {symbol}: {e}")
+
+        return result
+
+    def _sum_income_statement_quarters(self, quarters: List[Dict]) -> Dict[str, float]:
+        """
+        Sum income statement items across quarters for trailing 12-month calculation.
+
+        Parameters:
+        -----------
+        quarters : List[Dict]
+            List of quarterly income statement records (validated)
+
+        Returns:
+        --------
+        Dict[str, float]
+            Dictionary with summed financial metrics
+        """
+        # Define which fields to sum (income statement flow items)
+        summable_fields = [
+            "revenue",
+            "costOfRevenue",
+            "grossProfit",
+            "operatingExpenses",
+            "operatingIncome",
+            "totalOtherIncomeExpensesNet",
+            "ebitda",
+            "depreciationAndAmortization",
+            "incomeBeforeTax",
+            "incomeTaxExpense",
+            "netIncome",
+            "netIncomeRatio",
+            "eps",
+            "epsdiluted",
+        ]
+
+        trailing_12m = {}
+
+        for field in summable_fields:
+            total = 0
+            quarters_with_data = 0
+
+            for quarter in quarters:
+                value = quarter.get(field)
+                if value is not None and not pd.isna(value):
+                    total += value
+                    quarters_with_data += 1
+
+            # Only include fields that have data in at least 3 quarters
+            if quarters_with_data >= 3:
+                trailing_12m[field] = total
+            else:
+                trailing_12m[field] = None
+
+        # Calculate some derived metrics
+        if trailing_12m.get("revenue") and trailing_12m.get("netIncome"):
+            trailing_12m["net_margin"] = (
+                trailing_12m["netIncome"] / trailing_12m["revenue"]
+            )
+
+        if trailing_12m.get("revenue") and trailing_12m.get("operatingIncome"):
+            trailing_12m["operating_margin"] = (
+                trailing_12m["operatingIncome"] / trailing_12m["revenue"]
+            )
+
+        return trailing_12m
+
+    def _get_smart_ratio_accepted_date(
+        self, ratio_name: str, symbol: str, as_of_date: Union[str, datetime]
+    ) -> Optional[datetime]:
+        """
+        Get the appropriate acceptedDate for a financial ratio based on its underlying statements.
+
+        This implements smart acceptedDate mapping to provide precise timing for ratios
+        that depend on multiple financial statements.
+
+        Parameters:
+        -----------
+        ratio_name : str
+            Name of the financial ratio (e.g., 'debt_to_equity', 'roe', 'pe_ratio')
+        symbol : str
+            Stock symbol
+        as_of_date : Union[str, datetime]
+            Analysis date for filtering
+
+        Returns:
+        --------
+        Optional[datetime]
+            The appropriate acceptedDate for the ratio, or None if not determinable
+        """
+        # Define ratio-to-statement mapping
+        ratio_statement_mapping = {
+            # Balance sheet ratios (use balance sheet acceptedDate)
+            "debt_to_equity": ["balance_sheet"],
+            "current_ratio": ["balance_sheet"],
+            "pb_ratio": ["balance_sheet"],
+            "book_value_per_share": ["balance_sheet"],
+            "debt_ratio": ["balance_sheet"],
+            "asset_turnover": ["balance_sheet"],
+            # Income statement ratios (use income statement acceptedDate)
+            "pe_ratio": ["income_statement"],
+            "earnings_yield": ["income_statement"],
+            "net_margin": ["income_statement"],
+            "operating_margin": ["income_statement"],
+            "gross_margin": ["income_statement"],
+            # Multi-statement ratios (use latest acceptedDate)
+            "roe": ["income_statement", "balance_sheet"],
+            "roa": ["income_statement", "balance_sheet"],
+            "roic": ["income_statement", "balance_sheet"],
+            "interest_coverage": ["income_statement", "balance_sheet"],
+        }
+
+        required_statements = ratio_statement_mapping.get(ratio_name.lower())
+        if not required_statements:
+            logger.warning(
+                f"Unknown ratio type: {ratio_name}. Using fiscal date fallback."
+            )
+            return None
+
+        accepted_dates = []
+
+        try:
+            # Fetch required statement data (get more records to ensure we have data after filtering)
+            for statement_type in required_statements:
+                if statement_type == "income_statement":
+                    data = self._fetch_income_statement(symbol, limit=4)
+                elif statement_type == "balance_sheet":
+                    data = self._fetch_balance_sheet(symbol, limit=4)
+                else:
+                    continue
+
+                if data:
+                    validated_data = self._validate_financial_data(data, statement_type)
+                    filtered_data = self._filter_by_accepted_date(
+                        validated_data, as_of_date
+                    )
+
+                    if filtered_data and filtered_data[0].get("acceptedDate"):
+                        accepted_dates.append(
+                            pd.to_datetime(filtered_data[0]["acceptedDate"])
+                        )
+                    else:
+                        logger.debug(
+                            f"No {statement_type} data with acceptedDate available for {symbol} as of {as_of_date}"
+                        )
+                else:
+                    logger.debug(f"Failed to fetch {statement_type} data for {symbol}")
+            if accepted_dates:
+                # For multi-statement ratios, use the latest acceptedDate
+                # This ensures all component data was available
+                return max(accepted_dates)
+            else:
+                logger.warning(
+                    f"No acceptedDate found for {ratio_name} components for {symbol}"
+                )
+                return None
+
+        except Exception as e:
+            logger.error(f"Error determining acceptedDate for {ratio_name}: {e}")
+            return None
+
+    def _calculate_financial_ratios_with_timing(
+        self,
+        symbol: str,
+        as_of_date: Union[str, datetime],
+        ratios_to_calculate: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calculate financial ratios with proper acceptedDate timing.
+
+        This method combines trailing 12M data with balance sheet data to calculate
+        key financial ratios, using smart acceptedDate mapping for precise timing.
+
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+        as_of_date : Union[str, datetime]
+            Analysis date
+        ratios_to_calculate : Optional[List[str]]
+            Specific ratios to calculate. If None, calculates all supported ratios.
+
+        Returns:
+        --------
+        Dict[str, Any]
+            Dictionary containing calculated ratios and metadata
+        """
+        if ratios_to_calculate is None:
+            ratios_to_calculate = [
+                "pe_ratio",
+                "pb_ratio",
+                "debt_to_equity",
+                "roe",
+                "roa",
+                "current_ratio",
+                "operating_margin",
+                "net_margin",
+            ]
+
+        logger.info(
+            f"Calculating ratios for {symbol} as of {as_of_date}: {ratios_to_calculate}"
+        )
+
+        result = {
+            "ratios": {},
+            "metadata": {
+                "symbol": symbol,
+                "as_of_date": str(as_of_date),
+                "calculation_date": datetime.now().isoformat(),
+                "ratios_attempted": ratios_to_calculate,
+                "ratios_successful": [],
+                "errors": [],
+            },
+        }
+
+        try:
+            # Get trailing 12M data with balance sheet
+            trailing_data = self._get_trailing_12m_data(
+                symbol, as_of_date, include_balance_sheet=True
+            )
+
+            if not trailing_data["metadata"]["calculation_successful"]:
+                result["metadata"]["errors"].append("Failed to get trailing 12M data")
+                return result
+
+            ttm = trailing_data["trailing_12m"]
+            balance_sheet = trailing_data["balance_sheet"]
+
+            # Calculate each requested ratio
+            for ratio_name in ratios_to_calculate:
+                try:
+                    ratio_value = None
+                    accepted_date = self._get_smart_ratio_accepted_date(
+                        ratio_name, symbol, as_of_date
+                    )
+
+                    # Calculate ratio based on type
+                    if ratio_name == "pe_ratio" and ttm.get("netIncome"):
+                        # Note: PE ratio also needs market cap, which would come from price data
+                        # For now, we calculate the earnings component
+                        result["ratios"][ratio_name] = {
+                            "earnings_ttm": ttm["netIncome"],
+                            "accepted_date": (
+                                accepted_date.isoformat() if accepted_date else None
+                            ),
+                            "note": "Market cap needed to complete PE calculation",
+                        }
+
+                    elif ratio_name == "pb_ratio" and balance_sheet.get(
+                        "totalStockholdersEquity"
+                    ):
+                        result["ratios"][ratio_name] = {
+                            "book_value": balance_sheet["totalStockholdersEquity"],
+                            "accepted_date": (
+                                accepted_date.isoformat() if accepted_date else None
+                            ),
+                            "note": "Market cap needed to complete PB calculation",
+                        }
+
+                    elif ratio_name == "debt_to_equity":
+                        total_debt = balance_sheet.get("totalDebt", 0)
+                        equity = balance_sheet.get("totalStockholdersEquity")
+                        if equity and equity != 0:
+                            ratio_value = total_debt / equity
+
+                    elif ratio_name == "roe":
+                        net_income = ttm.get("netIncome")
+                        equity = balance_sheet.get("totalStockholdersEquity")
+                        if net_income and equity and equity > 0:
+                            ratio_value = net_income / equity
+                            logger.debug(
+                                f"ROE calculation: Net Income ${net_income:,.0f} / Equity ${equity:,.0f} = {ratio_value:.4f}"
+                            )
+
+                    elif ratio_name == "roa":
+                        net_income = ttm.get("netIncome")
+                        total_assets = balance_sheet.get("totalAssets")
+                        if net_income and total_assets and total_assets > 0:
+                            ratio_value = net_income / total_assets
+
+                    elif ratio_name == "current_ratio":
+                        current_assets = balance_sheet.get("totalCurrentAssets")
+                        current_liabilities = balance_sheet.get(
+                            "totalCurrentLiabilities"
+                        )
+                        if (
+                            current_assets
+                            and current_liabilities
+                            and current_liabilities != 0
+                        ):
+                            ratio_value = current_assets / current_liabilities
+
+                    elif ratio_name == "operating_margin":
+                        ratio_value = ttm.get("operating_margin")
+
+                    elif ratio_name == "net_margin":
+                        ratio_value = ttm.get("net_margin")
+
+                    # Store calculated ratio
+                    if ratio_value is not None:
+                        result["ratios"][ratio_name] = {
+                            "value": ratio_value,
+                            "accepted_date": (
+                                accepted_date.isoformat() if accepted_date else None
+                            ),
+                        }
+                        result["metadata"]["ratios_successful"].append(ratio_name)
+                    else:
+                        result["metadata"]["errors"].append(
+                            f"Could not calculate {ratio_name}: missing data"
+                        )
+
+                except Exception as e:
+                    error_msg = f"Error calculating {ratio_name}: {e}"
+                    result["metadata"]["errors"].append(error_msg)
+                    logger.warning(error_msg)
+
+            logger.info(
+                f"Calculated {len(result['metadata']['ratios_successful'])}/{len(ratios_to_calculate)} ratios for {symbol}"
+            )
+
+        except Exception as e:
+            error_msg = f"Error in ratio calculation pipeline: {e}"
+            result["metadata"]["errors"].append(error_msg)
+            logger.error(error_msg)
+
+        return result
 
 
 class DataManager:
