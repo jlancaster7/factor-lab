@@ -58,9 +58,10 @@
 
 ### 🎯 **CURRENT FOCUS**: 
 **Epic 3** - Advanced Caching System (to reduce API calls and improve performance)
+- **Story 3.1** - Cache Architecture Design ✅ **COMPLETED (June 2, 2025)**
+- **Story 3.2** - Intelligent Cache Implementation (IN PROGRESS)
 
 ### 📋 **NEXT UP**:
-- **Story 3.1** - Cache Architecture Design
 - **Story 3.2** - Intelligent Cache Implementation  
 - **Story 3.3** - Cache Performance Optimization
 
@@ -251,12 +252,23 @@ def _calculate_financial_ratios_with_timing(self, symbol: str, as_of_date: Union
 ---
 
 ## Epic 3: Advanced Caching System
-### Story 3.1: Cache Architecture Design ✅ (TODO)
-- [ ] Design cache key structure: `{ticker}_{statement_type}_{fiscal_period}`
-- [ ] Implement cache expiration based on acceptedDate
-- [ ] Add cache versioning for schema changes
-- [ ] Design cache invalidation strategy
-- [ ] Add cache size management and cleanup
+### Story 3.1: Cache Architecture Design ✅ **COMPLETED (June 2, 2025)**
+- [x] ✅ Design cache key structure: `{ticker}_{statement_type}_{fiscal_period}`
+- [x] ✅ Implement cache expiration based on acceptedDate
+- [x] ✅ Add cache versioning for schema changes
+- [x] ✅ Design cache invalidation strategy
+- [x] ✅ Add cache size management and cleanup
+
+**Completed Features:**
+- **CacheKey Class**: Structured key generation with symbol, statement type, period, fiscal date, and version
+- **CacheConfig Class**: Configurable TTLs per data type, compression, size limits, environment variable support
+- **CacheManager Class**: Full cache lifecycle management with get/set/invalidate operations
+- **Smart Expiration**: Different TTLs for different data types (7 days for statements, 1 day for ratios, 1 hour for prices)
+- **Size Management**: Automatic cleanup when cache exceeds threshold (LRU eviction)
+- **Compression Support**: Optional gzip compression to save disk space
+- **Performance Statistics**: Hit/miss tracking, error counting, hit rate calculation
+- **Batch Operations**: Support for bulk cache operations
+- **Test Suite**: Comprehensive tests in `test_cache_architecture.py`
 
 ### Story 3.2: Intelligent Cache Implementation ✅ (TODO)
 - [ ] Implement statement-level caching with acceptedDate metadata
