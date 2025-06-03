@@ -7,6 +7,8 @@ import gzip
 import time
 import shutil
 import logging
+import fcntl
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime, timedelta
@@ -199,7 +201,7 @@ class CacheManager:
             logger.error(f"Error writing cache for {key.to_string()}: {e}")
     
     def _write_cache_entry(self, key: CacheKey, cache_entry: Dict):
-        """Write cache entry to disk."""
+        """Write cache entry to disk with file locking."""
         try:
             file_path = self._get_file_path(key)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,13 +209,30 @@ class CacheManager:
             # Clean the cache entry to ensure it's JSON serializable
             cache_entry = self._clean_for_json(cache_entry)
             
-            # Write data (returns actual path used)
-            actual_path = self._write_cache_file(file_path, cache_entry)
+            # Use file locking to prevent concurrent writes to same file
+            lock_file = file_path.with_suffix('.lock')
             
-            self.stats.record_write()
-            
-            # Update metadata with actual path
-            self._update_metadata(key, actual_path)
+            try:
+                # Create lock file and acquire exclusive lock
+                with open(lock_file, 'w') as lock_fd:
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+                    
+                    # Write data (returns actual path used)
+                    actual_path = self._write_cache_file(file_path, cache_entry)
+                    
+                    self.stats.record_write()
+                    
+                    # Update metadata with actual path
+                    self._update_metadata(key, actual_path)
+                    
+                # Lock is automatically released when file is closed
+            finally:
+                # Clean up lock file
+                try:
+                    if lock_file.exists():
+                        lock_file.unlink()
+                except Exception:
+                    pass
             
             # Check if cleanup is needed
             if self._should_cleanup():
@@ -358,20 +377,62 @@ class CacheManager:
         return subdir / filename
     
     def _read_cache_file(self, file_path: Path) -> Optional[Dict]:
-        """Read a cache file (with compression support)."""
+        """Read a cache file (with compression support) and handle corruption."""
         try:
+            # Check file size first - empty files are clearly corrupt
+            if file_path.stat().st_size == 0:
+                logger.warning(f"Empty cache file detected: {file_path}")
+                self._remove_corrupt_file(file_path)
+                return None
+            
             if file_path.suffix == ".gz":
                 with gzip.open(file_path, "rt", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
             else:
                 with open(file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+            
+            # Validate cache structure
+            if not self._validate_cache_structure(data):
+                logger.warning(f"Invalid cache structure in {file_path}")
+                self._remove_corrupt_file(file_path)
+                return None
+                
+            return data
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Corrupt JSON in cache file {file_path}: {e}")
+            self._remove_corrupt_file(file_path)
+            return None
+        except gzip.BadGzipFile as e:
+            logger.warning(f"Corrupt gzip cache file {file_path}: {e}")
+            self._remove_corrupt_file(file_path)
+            return None
         except Exception as e:
             logger.error(f"Error reading cache file {file_path}: {e}")
             return None
     
+    def _validate_cache_structure(self, data: Dict) -> bool:
+        """Validate that cache data has required structure."""
+        if not isinstance(data, dict):
+            return False
+        
+        # Required keys for a valid cache entry
+        required_keys = ['data', '_cache_version', '_cached_at']
+        return all(key in data for key in required_keys)
+    
+    def _remove_corrupt_file(self, file_path: Path):
+        """Safely remove a corrupt cache file."""
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                logger.info(f"Removed corrupt cache file: {file_path}")
+                self.stats.record_eviction()
+        except Exception as e:
+            logger.error(f"Failed to remove corrupt file {file_path}: {e}")
+    
     def _write_cache_file(self, file_path: Path, data: Dict) -> Path:
-        """Write a cache file (with compression support)."""
+        """Write a cache file (with compression support) using atomic writes."""
         # Ensure directory exists
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -381,14 +442,29 @@ class CacheManager:
         else:
             actual_path = file_path
         
-        if actual_path.suffix == ".gz":
-            with gzip.open(actual_path, "wt", encoding="utf-8") as f:
-                json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
-        else:
-            with open(actual_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
+        # Use atomic writes: write to temp file, then rename
+        temp_path = actual_path.with_suffix(actual_path.suffix + '.tmp')
         
-        return actual_path
+        try:
+            if actual_path.suffix == ".gz":
+                with gzip.open(temp_path, "wt", encoding="utf-8") as f:
+                    json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
+            else:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
+            
+            # Atomic move - this prevents corruption from interrupted writes
+            temp_path.rename(actual_path)
+            return actual_path
+            
+        except Exception as e:
+            # Clean up temp file on failure
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            raise e
     
     def _is_expired(self, key: CacheKey, file_path: Path) -> bool:
         """Check if a cache entry is expired."""

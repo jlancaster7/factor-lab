@@ -1,8 +1,8 @@
 # FMP (Financial Modeling Prep) Implementation Plan
 
 ## 📊 **PROGRESS SUMMARY** (Updated: June 2, 2025)
-**Overall Progress: Epic 1 + Epic 2 + Epic 3 (Stories 1-4) + Epic 5 COMPLETED (80%)**
-**Latest Completion**: Story 3.4 - Price Data Cache Optimization ✅ COMPLETED
+**Overall Progress: Epic 1 + Epic 2 + Epic 3 (Stories 1-4 of 5) + Epic 5 COMPLETED (78%)**
+**Latest Issue**: Story 3.5 - Market Cap Calculation Performance Bottleneck Identified
 
 ### 🎉 **COMPLETED**:
 - **Epic 1**: Core FMP Infrastructure - Stories 1.1 ✅, 1.2 ✅, 1.3 ✅ (100% complete)
@@ -78,8 +78,28 @@
 - Added better error handling to continue with partial data instead of failing completely
 - Improved handling of multi-level column structures from yfinance
 
+### 🔧 **CACHE CORRUPTION ISSUE FIXED** (June 2, 2025):
+**Critical Fix: Recurring "Expecting value: line 1 column 1 (char 0)" Errors**
+- ✅ **Root Cause Identified**: Non-atomic writes causing partial/empty cache files
+- ✅ **Solution Implemented**: Atomic writes with temp files + file locking
+- ✅ **Benefits**: Eliminates cache corruption from interrupted writes and race conditions
+- ✅ **Testing**: Verified with single and concurrent operations
+
+**Technical Details:**
+- **Atomic Writes**: Files written to `.tmp` first, then atomically renamed
+- **File Locking**: `fcntl` locks prevent concurrent writes to same file
+- **Corruption Detection**: Automatic validation and cleanup of corrupt files
+- **Improved Error Handling**: Specific handling for JSON/gzip corruption
+
+### 🔧 **CRITICAL PERFORMANCE ISSUE IDENTIFIED** (June 2, 2025):
+**get_fundamental_factors() Performance Bottleneck**
+- Method makes 2,080+ individual market cap calculations for 16 symbols
+- Each calculation fetches price data separately (even if cached)
+- Results in slow performance despite caching
+
 ### 📋 **NEXT UP**:
-- **Epic 4** - Public API Design (Ready to start)
+- **Story 3.5** - Market Cap Calculation Optimization (HIGH PRIORITY)
+- **Epic 4** - Public API Design (after Story 3.5)
 
 ---
 
@@ -378,6 +398,83 @@ def _calculate_financial_ratios_with_timing(self, symbol: str, as_of_date: Union
 - Full backward compatibility maintained
 - All changes isolated to FMP provider
 
+### Story 3.5: Market Cap Calculation Optimization 🔧 **HIGH PRIORITY - TODO**
+**Problem Identified**: `get_fundamental_factors()` has a performance bottleneck despite Story 3.4 optimizations
+
+**Current Behavior:**
+- `get_fundamental_factors()` calls `_calculate_market_cap()` individually for each calculation date
+- For 16 symbols with weekly calculations over 2.5 years: 16 × 130 = **2,080 individual calls**
+- Each call fetches/filters price data separately (even from cache)
+- Results in slow performance even with optimized price caching
+
+**Root Cause Analysis:**
+```python
+# Current inefficient implementation in get_fundamental_factors()
+for calc_date in calculation_dates:  # ~130 dates per symbol
+    if shares and not pd.isna(shares):
+        market_cap = self._calculate_market_cap(symbol, calc_date, shares)
+        # This fetches price data 130 times per symbol!
+        # Even with cache, this is 130 file reads + DataFrame operations
+```
+
+**Why Story 3.4 Didn't Solve This:**
+- Story 3.4 optimized individual price fetches (each is now fast)
+- But didn't address the fundamental design issue: too many individual operations
+- Like optimizing a car engine but still taking 130 separate trips instead of one
+
+**Proposed Solution:**
+```python
+def get_fundamental_factors(...):
+    # For each symbol:
+    # 1. Fetch full price history ONCE at the beginning
+    price_history = self._fetch_historical_prices(symbol)
+    price_df = pd.DataFrame(price_history).set_index('date')
+    price_df.index = pd.to_datetime(price_df.index)
+    
+    # 2. Reuse for ALL calculation dates
+    for calc_date in calculation_dates:
+        # Just lookup the price - no fetching!
+        if calc_date in price_df.index:
+            price = price_df.loc[calc_date, 'close']
+        else:
+            # Handle weekends/holidays
+            nearest_date = price_df.index.asof(calc_date)
+            price = price_df.loc[nearest_date, 'close']
+        
+        market_cap = price * shares
+```
+
+**Implementation Tasks:**
+- [ ] Refactor `get_fundamental_factors()` to pre-fetch price histories
+- [ ] Create `_batch_calculate_market_caps()` method that takes price history and returns all market caps
+- [ ] Add efficient price lookup with weekend/holiday handling
+- [ ] Ensure memory efficiency (don't keep all price histories in memory at once)
+- [ ] Add performance metrics logging to measure improvement
+- [ ] Update integration tests
+
+**Expected Performance Improvements:**
+- **Current**: 2,080 cache operations (130 per symbol × 16 symbols)
+- **Optimized**: 16 cache operations (1 per symbol)
+- **Expected speedup**: 10-50x for fundamental factor calculation
+- **Memory trade-off**: Acceptable - ~1MB per symbol price history
+
+**Alternative Approaches Considered:**
+1. **Parallel processing**: Would help but doesn't address root inefficiency
+2. **Batch market cap API**: Would require new Epic 4 API design
+3. **Pre-computed market caps**: Would require significant architecture changes
+
+**Workaround for Users (until fixed):**
+```python
+# Use monthly instead of weekly calculations
+fundamental_data = fmp_provider.get_fundamental_factors(
+    symbols=universe,
+    start_date=start_date,
+    end_date=end_date,
+    frequency="daily",
+    calculation_frequency="M"  # Reduces calculations by 4x
+)
+```
+
 ---
 
 ## Epic 4: Public API Design
@@ -490,12 +587,13 @@ def _calculate_financial_ratios_with_timing(self, symbol: str, as_of_date: Union
 - ✅ Story 2.2: Trailing 12-Month Calculations (100% complete - all debugging issues resolved)
 - ✅ Story 2.3: Enhanced Financial Ratio Calculations (75% complete - 6/8 ratios working, PE/PB need market data)
 
-### Phase 3: Caching (Stories 3.1, 3.2, 3.3, 3.4) - **100% COMPLETE** ✅
-✅ **COMPLETED**: Advanced caching system with optimized price data handling
+### Phase 3: Caching (Stories 3.1, 3.2, 3.3, 3.4, 3.5) - **80% COMPLETE**
+Advanced caching system with optimized price data handling
 - ✅ Story 3.1: Cache Architecture Design (100% complete)
 - ✅ Story 3.2: Intelligent Cache Implementation (100% complete)
 - ✅ Story 3.3: Cache Performance Optimization (100% complete)
 - ✅ Story 3.4: Price Data Cache Optimization (100% complete - June 2, 2025)
+- ⚠️ Story 3.5: Market Cap Calculation Optimization (0% - HIGH PRIORITY)
 
 ### Phase 4: Public API (Stories 4.1, 4.2, 4.3)
 Clean public interface for fundamental data access
