@@ -21,6 +21,9 @@ import yaml
 import os
 from pathlib import Path
 
+# Import cache components
+from ..cache import CacheManager, CacheKey, CacheConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -207,7 +210,7 @@ class OpenBBProvider(DataProvider):
 class FMPProvider(DataProvider):
     """Financial Modeling Prep data provider for fundamental analysis."""
 
-    def __init__(self, api_key: str = ""):
+    def __init__(self, api_key: str = "", cache_config: Optional[CacheConfig] = None):
         super().__init__("Financial Modeling Prep")
         self.api_key = api_key or self._get_api_key()
         self.base_url = "https://financialmodelingprep.com/api/v3"
@@ -223,9 +226,22 @@ class FMPProvider(DataProvider):
             {"Content-Type": "application/json", "User-Agent": "Factor-Lab/1.0"}
         )
 
+        # Initialize cache
+        self.cache_config = cache_config or CacheConfig.from_env()
+        self.cache = CacheManager(self.cache_config)
+        logger.info(f"Initialized cache with directory: {self.cache_config.cache_dir}")
+
         logger.info(
             f"Initialized FMP Provider with API key: {'*' * 10}{self.api_key[-4:]}"
         )
+    
+    def __del__(self):
+        """Cleanup when provider is destroyed."""
+        try:
+            if hasattr(self, 'cache'):
+                self.cache.shutdown()
+        except Exception:
+            pass
 
     def _get_api_key(self) -> str:
         """Get API key from config file or environment variable."""
@@ -357,11 +373,85 @@ class FMPProvider(DataProvider):
             raise
 
     # === Story 1.2: Raw Data Fetching Methods ===
+    
+    def _cached_fetch(
+        self, 
+        statement_type: str,
+        symbol: str, 
+        url: str,
+        params: Dict,
+        limit: Optional[int] = None,
+        period: str = "quarterly"
+    ) -> Optional[List[Dict]]:
+        """
+        Generic method to fetch data with caching support.
+        
+        Parameters:
+        -----------
+        statement_type : str
+            Type of statement (income_statement, balance_sheet, etc.)
+        symbol : str
+            Stock symbol
+        url : str
+            API endpoint URL
+        params : Dict
+            Request parameters
+        limit : Optional[int]
+            Number of records limit
+        period : str
+            Period type (annual, quarterly)
+            
+        Returns:
+        --------
+        Optional[List[Dict]]
+            Cached or fetched data
+        """
+        # Normalize period - handle 'quarter' as well as 'quarterly'
+        normalized_period = "quarterly" if period.lower() in ["quarter", "quarterly"] else "annual"
+        
+        # Create cache key
+        cache_key = CacheKey(
+            symbol=symbol,
+            statement_type=statement_type,
+            period=normalized_period,
+            limit=limit,
+            version=self.cache_config.cache_version
+        )
+        
+        # Try to get from cache first
+        cached_data = self.cache.get(cache_key)
+        if cached_data is not None:
+            logger.debug(f"Cache hit for {symbol} {statement_type} ({period})")
+            return cached_data
+        
+        # Cache miss - fetch from API
+        logger.debug(f"Cache miss for {symbol} {statement_type} ({period})")
+        
+        data = self._make_request(url, params)
+        if data and isinstance(data, list):
+            logger.debug(
+                f"Fetched {len(data)} {period} {statement_type} records for {symbol}"
+            )
+            
+            # Cache the data with acceptedDate metadata if available
+            if data:
+                # Extract acceptedDate from first record for metadata
+                accepted_date = data[0].get("acceptedDate") if data else None
+                cache_key.accepted_date = accepted_date
+                
+                # Cache the response
+                self.cache.set(cache_key, data)
+                logger.debug(f"Cached {symbol} {statement_type} data")
+            
+            return data
+        else:
+            logger.warning(f"No {period} {statement_type} data found for {symbol}")
+            return None
 
     def _fetch_income_statement(
         self, symbol: str, limit: int = 5, period: str = "annual"
     ) -> Optional[List[Dict]]:
-        """Fetch income statement data for a symbol.
+        """Fetch income statement data for a symbol with caching.
 
         Parameters:
         -----------
@@ -374,21 +464,20 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/income-statement/{symbol}"
         params = {"limit": limit, "period": period}
-
-        data = self._make_request(url, params)
-        if data and isinstance(data, list):
-            logger.debug(
-                f"Fetched {len(data)} {period} income statement records for {symbol}"
-            )
-            return data
-        else:
-            logger.warning(f"No {period} income statement data found for {symbol}")
-            return None
+        
+        return self._cached_fetch(
+            statement_type="income_statement",
+            symbol=symbol,
+            url=url,
+            params=params,
+            limit=limit,
+            period=period
+        )
 
     def _fetch_balance_sheet(
         self, symbol: str, limit: int = 5, period: str = "annual"
     ) -> Optional[List[Dict]]:
-        """Fetch balance sheet data for a symbol.
+        """Fetch balance sheet data for a symbol with caching.
 
         Parameters:
         -----------
@@ -401,21 +490,20 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/balance-sheet-statement/{symbol}"
         params = {"limit": limit, "period": period}
-
-        data = self._make_request(url, params)
-        if data and isinstance(data, list):
-            logger.debug(
-                f"Fetched {len(data)} {period} balance sheet records for {symbol}"
-            )
-            return data
-        else:
-            logger.warning(f"No {period} balance sheet data found for {symbol}")
-            return None
+        
+        return self._cached_fetch(
+            statement_type="balance_sheet",
+            symbol=symbol,
+            url=url,
+            params=params,
+            limit=limit,
+            period=period
+        )
 
     def _fetch_cash_flow(
         self, symbol: str, limit: int = 5, period: str = "annual"
     ) -> Optional[List[Dict]]:
-        """Fetch cash flow statement data for a symbol.
+        """Fetch cash flow statement data for a symbol with caching.
 
         Parameters:
         -----------
@@ -428,29 +516,31 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/cash-flow-statement/{symbol}"
         params = {"limit": limit, "period": period}
-
-        data = self._make_request(url, params)
-        if data and isinstance(data, list):
-            logger.debug(f"Fetched {len(data)} {period} cash flow records for {symbol}")
-            return data
-        else:
-            logger.warning(f"No {period} cash flow data found for {symbol}")
-            return None
+        
+        return self._cached_fetch(
+            statement_type="cash_flow",
+            symbol=symbol,
+            url=url,
+            params=params,
+            limit=limit,
+            period=period
+        )
 
     def _fetch_financial_ratios(
         self, symbol: str, limit: int = 5
     ) -> Optional[List[Dict]]:
-        """Fetch financial ratios data for a symbol."""
+        """Fetch financial ratios data for a symbol with caching."""
         url = f"{self.base_url}/ratios/{symbol}"
         params = {"limit": limit}
-
-        data = self._make_request(url, params)
-        if data and isinstance(data, list):
-            logger.debug(f"Fetched {len(data)} financial ratio records for {symbol}")
-            return data
-        else:
-            logger.warning(f"No financial ratios data found for {symbol}")
-            return None
+        
+        return self._cached_fetch(
+            statement_type="financial_ratios",
+            symbol=symbol,
+            url=url,
+            params=params,
+            limit=limit,
+            period="quarterly"  # Ratios are typically quarterly
+        )
 
     def _fetch_historical_prices(
         self, 
@@ -460,7 +550,7 @@ class FMPProvider(DataProvider):
         limit: Optional[int] = None
     ) -> Optional[List[Dict]]:
         """
-        Fetch historical end-of-day price data from FMP.
+        Fetch historical end-of-day price data from FMP with caching.
         
         Parameters:
         -----------
@@ -478,6 +568,27 @@ class FMPProvider(DataProvider):
         Optional[List[Dict]]
             List of price records with date, OHLC, volume
         """
+        # Create cache key for price data
+        # Use date range as part of the key for price data
+        # Replace hyphens to avoid parsing issues
+        date_key = f"{(from_date or 'start').replace('-', '')}_{(to_date or 'end').replace('-', '')}"
+        cache_key = CacheKey(
+            symbol=symbol,
+            statement_type="price",
+            period="daily",
+            fiscal_date=date_key,  # Use date range as fiscal_date
+            version=self.cache_config.cache_version
+        )
+        
+        # Try to get from cache first
+        cached_data = self.cache.get(cache_key)
+        if cached_data is not None:
+            logger.debug(f"Cache hit for {symbol} price data ({date_key})")
+            return cached_data
+        
+        # Cache miss - fetch from API
+        logger.debug(f"Cache miss for {symbol} price data ({date_key})")
+        
         url = f"{self.base_url}/historical-price-full/{symbol}"
         params = {}
         
@@ -493,11 +604,81 @@ class FMPProvider(DataProvider):
         if data and isinstance(data, dict) and "historical" in data:
             historical_data = data["historical"]
             logger.debug(f"Fetched {len(historical_data)} price records for {symbol}")
+            
+            # Cache the historical data
+            if historical_data:
+                self.cache.set(cache_key, historical_data)
+                logger.debug(f"Cached {symbol} price data")
+            
             return historical_data
         else:
             logger.warning(f"No historical price data found for {symbol}")
             return None
 
+    # === Story 3.2: Cache Management Methods ===
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get cache statistics including hit rate, size, and performance metrics.
+        
+        Returns:
+        --------
+        Dict[str, Any]
+            Cache statistics dictionary
+        """
+        return self.cache.get_stats()
+    
+    def clear_cache(self, symbol: Optional[str] = None, statement_type: Optional[str] = None):
+        """
+        Clear cache entries.
+        
+        Parameters:
+        -----------
+        symbol : Optional[str]
+            If provided, clear only cache for this symbol
+        statement_type : Optional[str]
+            If provided with symbol, clear only specific statement type
+        """
+        if symbol:
+            self.cache.invalidate_symbol(symbol, statement_type)
+            logger.info(f"Cleared cache for {symbol}" + (f" {statement_type}" if statement_type else ""))
+        else:
+            self.cache.clear_all()
+            logger.info("Cleared all cache")
+    
+    def warm_cache(self, symbols: List[str], statement_types: Optional[List[str]] = None):
+        """
+        Pre-warm cache for a list of symbols.
+        
+        Parameters:
+        -----------
+        symbols : List[str]
+            List of symbols to cache
+        statement_types : Optional[List[str]]
+            Specific statement types to cache (default: all)
+        """
+        if statement_types is None:
+            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
+        
+        logger.info(f"Warming cache for {len(symbols)} symbols")
+        
+        for symbol in symbols:
+            for stmt_type in statement_types:
+                try:
+                    if stmt_type == "income_statement":
+                        self._fetch_income_statement(symbol, limit=20, period="quarter")
+                    elif stmt_type == "balance_sheet":
+                        self._fetch_balance_sheet(symbol, limit=20, period="quarter")
+                    elif stmt_type == "cash_flow":
+                        self._fetch_cash_flow(symbol, limit=20, period="quarter")
+                    elif stmt_type == "financial_ratios":
+                        self._fetch_financial_ratios(symbol, limit=20)
+                except Exception as e:
+                    logger.error(f"Error warming cache for {symbol} {stmt_type}: {e}")
+        
+        stats = self.get_cache_stats()
+        logger.info(f"Cache warming complete. Hit rate: {stats.get('hit_rate', 0):.2%}")
+    
     # === Story 1.3: Data Validation and Cleaning ===
 
     def _validate_financial_data(self, data: List[Dict], data_type: str) -> List[Dict]:

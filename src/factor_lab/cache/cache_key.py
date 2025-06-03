@@ -145,7 +145,7 @@ class CacheKey:
                 version = part[1:]
             elif part.startswith("limit"):
                 limit = int(part[5:])
-            elif "-" in part and len(part) == 10:  # Date format YYYY-MM-DD
+            elif len(part) >= 10:  # Date format or date range
                 fiscal_date = part
         
         return cls(
