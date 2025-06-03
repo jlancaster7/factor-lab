@@ -21,30 +21,23 @@
 - **Files Modified**: `src/factor_lab/cache/cache_manager.py`
 - **Status**: ✅ FIXED - No more cache corruption
 
-### 2. Performance Bottleneck (Story 3.5) - NEXT PRIORITY
+### 2. ❌ SKIPPED: Performance Bottleneck (Story 3.5)
 - `get_fundamental_factors()` makes 2,080 individual market cap calculations
 - Each calls `_calculate_market_cap()` separately
-- Solution documented in fmp_implementation_plan.md Story 3.5
+- **Status**: SKIPPED - database migration will solve this properly with batch queries
 
-### 3. Database Migration Needed
+### 3. ✅ DATABASE MIGRATION PLAN CREATED
 **Key Insight**: The current "cache" is really a historical data store
 - Historical financial data is immutable (Q3 2023 earnings never change)
 - TTL-based expiration makes no sense for historical data
-- Should migrate to Snowflake or similar database
-- Current JSON file storage is inefficient
+- File-based storage cannot efficiently query date ranges
+- **Solution**: Comprehensive migration plan created in `DATABASE_MIGRATION_PLAN.md`
 
-**Proposed Data Model**:
-```sql
-CREATE TABLE fundamental_data (
-    symbol VARCHAR,
-    fiscal_date DATE,
-    accepted_date DATE,
-    metric_name VARCHAR,
-    metric_value FLOAT,
-    created_at TIMESTAMP,
-    PRIMARY KEY (symbol, fiscal_date, metric_name)
-);
-```
+**Migration Strategy**:
+- **Target**: PostgreSQL + TimescaleDB or Snowflake (user has access)
+- **Timeline**: 4-week phased migration with safety measures
+- **Schema**: Proper time-series tables with optimized indexes
+- **Benefits**: 10-50x performance improvement, solves Story 3.5 automatically
 
 ## File Structure
 - **Main docs**: 
@@ -56,10 +49,18 @@ CREATE TABLE fundamental_data (
 - **Notebooks**:
   - `notebooks/fundamental_factors.ipynb` - Uses FMP real data
 
-## Next Steps Priority
-1. **Fix Story 3.5** - Market cap calculation optimization (10-50x speedup)
-2. **Database Migration** - Move from file cache to proper data warehouse
-3. **Epic 4** - Additional public API methods (if needed)
+## Next Steps Priority (UPDATED)
+1. **DATABASE MIGRATION** - Critical architectural improvement (See DATABASE_MIGRATION_PLAN.md)
+   - File-based cache is fundamentally wrong for historical financial data
+   - PostgreSQL + TimescaleDB or Snowflake migration plan created
+   - Will solve Story 3.5 performance bottleneck automatically
+   - Expected 10-50x performance improvement
+2. **Epic 4** - Additional public API methods (after database migration)
+
+## 🗄️ Database Migration Plan Available
+**Document**: `DATABASE_MIGRATION_PLAN.md` contains comprehensive migration strategy
+**Timeline**: 4-week migration plan with parallel operation and rollback safety
+**Benefits**: Solves performance issues, enables proper time-series analytics, scalable architecture
 
 ## Technical Context
 - Python 3.11, Poetry for dependencies

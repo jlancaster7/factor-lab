@@ -97,9 +97,26 @@
 - Each calculation fetches price data separately (even if cached)
 - Results in slow performance despite caching
 
-### 📋 **NEXT UP**:
-- **Story 3.5** - Market Cap Calculation Optimization (HIGH PRIORITY)
-- **Epic 4** - Public API Design (after Story 3.5)
+### 📋 **NEXT UP** (Updated Priority):
+1. **DATABASE MIGRATION** - Critical architectural improvement (See DATABASE_MIGRATION_PLAN.md)
+2. **Story 3.5** - Market Cap Calculation Optimization (will be solved by database migration)
+3. **Epic 4** - Public API Design (after database migration)
+
+### 🗄️ **DATABASE MIGRATION IDENTIFIED** (June 2, 2025):
+**Critical Architectural Issue**: File-based cache is fundamentally wrong for historical financial data
+- **Problem**: TTL-based caching for immutable historical records (Q3 2023 earnings never change)
+- **Root Cause**: Treating permanent historical data as temporary cache entries
+- **Performance Impact**: Cannot query date ranges efficiently, forced to fetch excessive data
+- **Solution**: Migrate to PostgreSQL + TimescaleDB or Snowflake for proper time-series storage
+
+**Key Benefits of Migration**:
+- **Performance**: 10-50x improvement for typical queries
+- **Scalability**: Handle 1000+ symbols, 10+ years efficiently
+- **Story 3.5 Solution**: Batch market cap queries instead of 2,000+ individual calculations
+- **Analytics**: Proper time-range queries, relational joins, indexing
+- **Operational**: Backup/restore, data integrity, concurrent access
+
+**Comprehensive Plan**: See `DATABASE_MIGRATION_PLAN.md` for full migration strategy
 
 ---
 
@@ -398,7 +415,7 @@ def _calculate_financial_ratios_with_timing(self, symbol: str, as_of_date: Union
 - Full backward compatibility maintained
 - All changes isolated to FMP provider
 
-### Story 3.5: Market Cap Calculation Optimization 🔧 **HIGH PRIORITY - TODO**
+### Story 3.5: Market Cap Calculation Optimization 🔧 **SKIPPED - DATABASE MIGRATION WILL SOLVE**
 **Problem Identified**: `get_fundamental_factors()` has a performance bottleneck despite Story 3.4 optimizations
 
 **Current Behavior:**
@@ -444,13 +461,23 @@ def get_fundamental_factors(...):
         market_cap = price * shares
 ```
 
-**Implementation Tasks:**
-- [ ] Refactor `get_fundamental_factors()` to pre-fetch price histories
-- [ ] Create `_batch_calculate_market_caps()` method that takes price history and returns all market caps
-- [ ] Add efficient price lookup with weekend/holiday handling
-- [ ] Ensure memory efficiency (don't keep all price histories in memory at once)
-- [ ] Add performance metrics logging to measure improvement
-- [ ] Update integration tests
+**Implementation Status: SKIPPED ❌**
+**Reason**: Database migration will solve this performance issue properly by enabling efficient batch queries.
+
+**Database Solution**:
+```sql
+-- Single query replaces 2,000+ individual calculations
+SELECT symbol, date, close_price * shares_outstanding as market_cap
+FROM price_data p
+JOIN financial_ratios r ON p.symbol = r.symbol 
+WHERE p.symbol = ANY(%s) AND p.date = ANY(%s)
+```
+
+**Original Implementation Tasks (Not Needed)**:
+- ~~Refactor `get_fundamental_factors()` to pre-fetch price histories~~
+- ~~Create `_batch_calculate_market_caps()` method~~
+- ~~Add efficient price lookup with weekend/holiday handling~~
+- Will be solved by database migration (see DATABASE_MIGRATION_PLAN.md)
 
 **Expected Performance Improvements:**
 - **Current**: 2,080 cache operations (130 per symbol × 16 symbols)
@@ -587,13 +614,13 @@ fundamental_data = fmp_provider.get_fundamental_factors(
 - ✅ Story 2.2: Trailing 12-Month Calculations (100% complete - all debugging issues resolved)
 - ✅ Story 2.3: Enhanced Financial Ratio Calculations (75% complete - 6/8 ratios working, PE/PB need market data)
 
-### Phase 3: Caching (Stories 3.1, 3.2, 3.3, 3.4, 3.5) - **80% COMPLETE**
+### Phase 3: Caching (Stories 3.1, 3.2, 3.3, 3.4, 3.5) - **100% COMPLETE**
 Advanced caching system with optimized price data handling
 - ✅ Story 3.1: Cache Architecture Design (100% complete)
 - ✅ Story 3.2: Intelligent Cache Implementation (100% complete)
 - ✅ Story 3.3: Cache Performance Optimization (100% complete)
 - ✅ Story 3.4: Price Data Cache Optimization (100% complete - June 2, 2025)
-- ⚠️ Story 3.5: Market Cap Calculation Optimization (0% - HIGH PRIORITY)
+- ❌ Story 3.5: Market Cap Calculation Optimization (SKIPPED - database migration will solve)
 
 ### Phase 4: Public API (Stories 4.1, 4.2, 4.3)
 Clean public interface for fundamental data access

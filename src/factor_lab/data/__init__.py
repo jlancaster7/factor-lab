@@ -80,17 +80,21 @@ class YahooFinanceProvider(DataProvider):
             # Add retry logic and better error handling
             max_retries = 3
             retry_delay = 2
-            
+
             # For large symbol lists, batch the downloads
             batch_size = 10
             if len(symbols) > batch_size:
-                logger.info(f"Downloading {len(symbols)} symbols in batches of {batch_size}")
+                logger.info(
+                    f"Downloading {len(symbols)} symbols in batches of {batch_size}"
+                )
                 all_data = []
-                
+
                 for i in range(0, len(symbols), batch_size):
-                    batch_symbols = symbols[i:i + batch_size]
-                    logger.debug(f"Downloading batch {i//batch_size + 1}: {batch_symbols}")
-                    
+                    batch_symbols = symbols[i : i + batch_size]
+                    logger.debug(
+                        f"Downloading batch {i//batch_size + 1}: {batch_symbols}"
+                    )
+
                     for attempt in range(max_retries):
                         try:
                             batch_data = yf.download(
@@ -100,27 +104,33 @@ class YahooFinanceProvider(DataProvider):
                                 progress=False,
                                 auto_adjust=True,
                                 threads=False,
-                                timeout=30
+                                timeout=30,
                             )
-                            
+
                             if not batch_data.empty:
                                 all_data.append(batch_data)
                                 break
                             else:
-                                logger.warning(f"Empty data for batch {batch_symbols} on attempt {attempt + 1}")
-                                
+                                logger.warning(
+                                    f"Empty data for batch {batch_symbols} on attempt {attempt + 1}"
+                                )
+
                         except Exception as e:
                             if attempt < max_retries - 1:
-                                logger.warning(f"Batch download attempt {attempt + 1} failed: {e}. Retrying...")
+                                logger.warning(
+                                    f"Batch download attempt {attempt + 1} failed: {e}. Retrying..."
+                                )
                                 time.sleep(retry_delay)
                             else:
-                                logger.error(f"Failed to download batch {batch_symbols}: {e}")
+                                logger.error(
+                                    f"Failed to download batch {batch_symbols}: {e}"
+                                )
                                 # Continue with other batches instead of failing completely
                                 break
-                    
+
                     # Small delay between batches
                     time.sleep(0.5)
-                
+
                 # Combine all batch data
                 if all_data:
                     data = pd.concat(all_data, axis=1)
@@ -139,17 +149,21 @@ class YahooFinanceProvider(DataProvider):
                             progress=False,
                             auto_adjust=True,
                             threads=False,
-                            timeout=30
+                            timeout=30,
                         )
-                        
+
                         if not data.empty:
                             break
                         else:
-                            logger.warning(f"Empty data returned for {symbols} on attempt {attempt + 1}")
-                            
+                            logger.warning(
+                                f"Empty data returned for {symbols} on attempt {attempt + 1}"
+                            )
+
                     except Exception as e:
                         if attempt < max_retries - 1:
-                            logger.warning(f"Download attempt {attempt + 1} failed: {e}. Retrying...")
+                            logger.warning(
+                                f"Download attempt {attempt + 1} failed: {e}. Retrying..."
+                            )
                             time.sleep(retry_delay)
                             retry_delay *= 2
                         else:
@@ -163,7 +177,7 @@ class YahooFinanceProvider(DataProvider):
             if data.empty:
                 logger.warning(f"No data downloaded for symbols: {symbols}")
                 return pd.DataFrame(columns=symbols)
-            
+
             # Handle different data structures from yfinance
             if len(symbols) == 1:
                 # Single symbol case
@@ -178,7 +192,7 @@ class YahooFinanceProvider(DataProvider):
                             return result
                     else:
                         # Try with 'Close' as fallback
-                        result = data['Close'].copy()
+                        result = data["Close"].copy()
                         if isinstance(result, pd.Series):
                             return result.to_frame(symbols[0])
                         else:
@@ -188,8 +202,8 @@ class YahooFinanceProvider(DataProvider):
                     # Single-level columns
                     if price_type in data.columns:
                         return data[price_type].to_frame(symbols[0])
-                    elif 'Close' in data.columns:
-                        return data['Close'].to_frame(symbols[0])
+                    elif "Close" in data.columns:
+                        return data["Close"].to_frame(symbols[0])
                     else:
                         logger.error(f"No price data found for {symbols[0]}")
                         return pd.DataFrame(columns=symbols)
@@ -206,7 +220,7 @@ class YahooFinanceProvider(DataProvider):
                             return result.to_frame()
                     else:
                         # Try 'Close' as fallback
-                        result = data['Close']
+                        result = data["Close"]
                         if isinstance(result, pd.DataFrame):
                             return result
                         else:
@@ -216,7 +230,7 @@ class YahooFinanceProvider(DataProvider):
                     if price_type in data.columns:
                         return data[price_type]
                     else:
-                        return data['Close']
+                        return data["Close"]
 
         except Exception as e:
             logger.error(f"Error fetching data from Yahoo Finance: {e}")
@@ -329,20 +343,21 @@ class FMPProvider(DataProvider):
         self.cache_config = cache_config or CacheConfig.from_env()
         self.cache = CacheManager(self.cache_config)
         logger.info(f"Initialized cache with directory: {self.cache_config.cache_dir}")
-        
+
         # Initialize cache optimization
         from ..cache import CachePreloadStrategy, CacheOptimizer
+
         self.preload_strategy = CachePreloadStrategy(self.cache_config.cache_dir)
         self.cache_optimizer = CacheOptimizer(self.cache)
 
         logger.info(
             f"Initialized FMP Provider with API key: {'*' * 10}{self.api_key[-4:]}"
         )
-    
+
     def __del__(self):
         """Cleanup when provider is destroyed."""
         try:
-            if hasattr(self, 'cache'):
+            if hasattr(self, "cache"):
                 self.cache.shutdown()
         except Exception:
             pass
@@ -477,19 +492,19 @@ class FMPProvider(DataProvider):
             raise
 
     # === Story 1.2: Raw Data Fetching Methods ===
-    
+
     def _cached_fetch(
-        self, 
+        self,
         statement_type: str,
-        symbol: str, 
+        symbol: str,
         url: str,
         params: Dict,
         limit: Optional[int] = None,
-        period: str = "quarterly"
+        period: str = "quarterly",
     ) -> Optional[List[Dict]]:
         """
         Generic method to fetch data with caching support.
-        
+
         Parameters:
         -----------
         statement_type : str
@@ -504,24 +519,26 @@ class FMPProvider(DataProvider):
             Number of records limit
         period : str
             Period type (annual, quarterly)
-            
+
         Returns:
         --------
         Optional[List[Dict]]
             Cached or fetched data
         """
         # Normalize period - handle 'quarter' as well as 'quarterly'
-        normalized_period = "quarterly" if period.lower() in ["quarter", "quarterly"] else "annual"
-        
+        normalized_period = (
+            "quarterly" if period.lower() in ["quarter", "quarterly"] else "annual"
+        )
+
         # Create cache key
         cache_key = CacheKey(
             symbol=symbol,
             statement_type=statement_type,
             period=normalized_period,
             limit=limit,
-            version=self.cache_config.cache_version
+            version=self.cache_config.cache_version,
         )
-        
+
         # Try to get from cache first
         cached_data = self.cache.get(cache_key)
         if cached_data is not None:
@@ -529,26 +546,26 @@ class FMPProvider(DataProvider):
             # Track access for preload optimization
             self.preload_strategy.track_access(symbol, statement_type)
             return cached_data
-        
+
         # Cache miss - fetch from API
         logger.debug(f"Cache miss for {symbol} {statement_type} ({period})")
-        
+
         data = self._make_request(url, params)
         if data and isinstance(data, list):
             logger.debug(
                 f"Fetched {len(data)} {period} {statement_type} records for {symbol}"
             )
-            
+
             # Cache the data with acceptedDate metadata if available
             if data:
                 # Extract acceptedDate from first record for metadata
                 accepted_date = data[0].get("acceptedDate") if data else None
                 cache_key.accepted_date = accepted_date
-                
+
                 # Cache the response
                 self.cache.set(cache_key, data)
                 logger.debug(f"Cached {symbol} {statement_type} data")
-            
+
             return data
         else:
             logger.warning(f"No {period} {statement_type} data found for {symbol}")
@@ -570,14 +587,14 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/income-statement/{symbol}"
         params = {"limit": limit, "period": period}
-        
+
         return self._cached_fetch(
             statement_type="income_statement",
             symbol=symbol,
             url=url,
             params=params,
             limit=limit,
-            period=period
+            period=period,
         )
 
     def _fetch_balance_sheet(
@@ -596,14 +613,14 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/balance-sheet-statement/{symbol}"
         params = {"limit": limit, "period": period}
-        
+
         return self._cached_fetch(
             statement_type="balance_sheet",
             symbol=symbol,
             url=url,
             params=params,
             limit=limit,
-            period=period
+            period=period,
         )
 
     def _fetch_cash_flow(
@@ -622,14 +639,14 @@ class FMPProvider(DataProvider):
         """
         url = f"{self.base_url}/cash-flow-statement/{symbol}"
         params = {"limit": limit, "period": period}
-        
+
         return self._cached_fetch(
             statement_type="cash_flow",
             symbol=symbol,
             url=url,
             params=params,
             limit=limit,
-            period=period
+            period=period,
         )
 
     def _fetch_financial_ratios(
@@ -638,30 +655,30 @@ class FMPProvider(DataProvider):
         """Fetch financial ratios data for a symbol with caching."""
         url = f"{self.base_url}/ratios/{symbol}"
         params = {"limit": limit}
-        
+
         return self._cached_fetch(
             statement_type="financial_ratios",
             symbol=symbol,
             url=url,
             params=params,
             limit=limit,
-            period="quarterly"  # Ratios are typically quarterly
+            period="quarterly",  # Ratios are typically quarterly
         )
 
     def _fetch_historical_prices(
-        self, 
-        symbol: str, 
-        from_date: Optional[str] = None, 
+        self,
+        symbol: str,
+        from_date: Optional[str] = None,
         to_date: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
     ) -> Optional[List[Dict]]:
         """
         Fetch historical end-of-day price data from FMP with optimized caching.
-        
+
         This method implements full symbol caching to avoid fragmentation.
         Instead of caching each date range separately, it caches the full
         available history per symbol and returns the requested subset.
-        
+
         Parameters:
         -----------
         symbol : str
@@ -672,7 +689,7 @@ class FMPProvider(DataProvider):
             End date in YYYY-MM-DD format
         limit : Optional[int]
             Maximum number of records to fetch (not used with date range)
-            
+
         Returns:
         --------
         Optional[List[Dict]]
@@ -684,83 +701,91 @@ class FMPProvider(DataProvider):
             statement_type="price",
             period="full_history",
             fiscal_date="all",
-            version="2.0"  # New version for optimized cache
+            version="2.0",  # New version for optimized cache
         )
-        
+
         # Try to get full history from cache
         cached_full_history = self.cache.get(full_history_key)
-        
+
         if cached_full_history is not None:
             logger.debug(f"Cache hit for {symbol} full price history")
-            
+
             # Filter to requested date range if needed
             if from_date or to_date:
                 filtered_data = []
                 from_dt = pd.to_datetime(from_date) if from_date else pd.Timestamp.min
                 to_dt = pd.to_datetime(to_date) if to_date else pd.Timestamp.max
-                
+
                 for record in cached_full_history:
-                    record_date = pd.to_datetime(record['date'])
+                    record_date = pd.to_datetime(record["date"])
                     if from_dt <= record_date <= to_dt:
                         filtered_data.append(record)
-                
-                logger.debug(f"Filtered {len(filtered_data)} records from cached {len(cached_full_history)} records")
+
+                logger.debug(
+                    f"Filtered {len(filtered_data)} records from cached {len(cached_full_history)} records"
+                )
                 return filtered_data
             else:
                 return cached_full_history
-        
+
         # Cache miss - fetch full history from API
         logger.info(f"Cache miss for {symbol} price data - fetching full history")
-        
+
         url = f"{self.base_url}/historical-price-full/{symbol}"
         params = {}
-        
+
         # Fetch full available history (no date params)
         # FMP returns max 5 years by default, which is sufficient for most use cases
         data = self._make_request(url, params)
-        
+
         # FMP returns data in a nested structure
         if data and isinstance(data, dict) and "historical" in data:
             full_history = data["historical"]
-            logger.info(f"Fetched {len(full_history)} price records for {symbol} (full history)")
-            
+            logger.info(
+                f"Fetched {len(full_history)} price records for {symbol} (full history)"
+            )
+
             # Cache the full history
             if full_history:
                 self.cache.set(full_history_key, full_history)
-                logger.info(f"Cached {symbol} full price history ({len(full_history)} records)")
-            
+                logger.info(
+                    f"Cached {symbol} full price history ({len(full_history)} records)"
+                )
+
             # Filter to requested date range if needed
             if from_date or to_date:
                 filtered_data = []
                 from_dt = pd.to_datetime(from_date) if from_date else pd.Timestamp.min
                 to_dt = pd.to_datetime(to_date) if to_date else pd.Timestamp.max
-                
+
                 for record in full_history:
-                    record_date = pd.to_datetime(record['date'])
+                    record_date = pd.to_datetime(record["date"])
                     if from_dt <= record_date <= to_dt:
                         filtered_data.append(record)
-                
-                logger.debug(f"Returning {len(filtered_data)} records for requested range")
+
+                logger.debug(
+                    f"Returning {len(filtered_data)} records for requested range"
+                )
                 return filtered_data
             else:
                 return full_history
         else:
             logger.warning(f"No historical price data found for {symbol}")
             return None
-    
+
     def _update_price_cache_if_stale(self, symbol: str) -> bool:
         """
         Check if price cache needs updating and update if necessary.
-        
+
         This method checks if the cached price data is up to date.
         If the latest cached date is more than 1 day old, it fetches
         recent data and appends to the cache.
-        
+
         Parameters:
         -----------
         symbol : str
             Stock symbol
-            
+
         Returns:
         --------
         bool
@@ -771,70 +796,80 @@ class FMPProvider(DataProvider):
             statement_type="price",
             period="full_history",
             fiscal_date="all",
-            version="2.0"
+            version="2.0",
         )
-        
+
         cached_data = self.cache.get(full_history_key)
         if not cached_data:
             return False
-        
+
         # Check latest date in cache
-        latest_cached_date = pd.to_datetime(cached_data[0]['date'])  # FMP returns newest first
+        latest_cached_date = pd.to_datetime(
+            cached_data[0]["date"]
+        )  # FMP returns newest first
         today = pd.to_datetime(datetime.now().date())
-        
+
         # If cache is current (within 1 trading day), no update needed
         if (today - latest_cached_date).days <= 1:
             return False
-        
-        logger.info(f"Price cache for {symbol} is stale (latest: {latest_cached_date}), updating...")
-        
+
+        logger.info(
+            f"Price cache for {symbol} is stale (latest: {latest_cached_date}), updating..."
+        )
+
         # Fetch recent data
         from_date = (latest_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
         to_date = today.strftime("%Y-%m-%d")
-        
+
         url = f"{self.base_url}/historical-price-full/{symbol}"
         params = {"from": from_date, "to": to_date}
-        
+
         data = self._make_request(url, params)
-        
+
         if data and isinstance(data, dict) and "historical" in data:
             new_records = data["historical"]
             if new_records:
                 # Merge new records with existing cache (remove duplicates)
-                existing_dates = {record['date'] for record in cached_data}
-                
+                existing_dates = {record["date"] for record in cached_data}
+
                 # Add new records that aren't already in cache
                 records_added = 0
                 for record in new_records:
-                    if record['date'] not in existing_dates:
-                        cached_data.insert(0, record)  # Insert at beginning (newest first)
+                    if record["date"] not in existing_dates:
+                        cached_data.insert(
+                            0, record
+                        )  # Insert at beginning (newest first)
                         records_added += 1
-                
+
                 if records_added > 0:
                     # Update cache
                     self.cache.set(full_history_key, cached_data)
-                    logger.info(f"Updated {symbol} price cache with {records_added} new records")
+                    logger.info(
+                        f"Updated {symbol} price cache with {records_added} new records"
+                    )
                     return True
-        
+
         return False
 
     # === Story 3.2: Cache Management Methods ===
-    
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get cache statistics including hit rate, size, and performance metrics.
-        
+
         Returns:
         --------
         Dict[str, Any]
             Cache statistics dictionary
         """
         return self.cache.get_stats()
-    
-    def clear_cache(self, symbol: Optional[str] = None, statement_type: Optional[str] = None):
+
+    def clear_cache(
+        self, symbol: Optional[str] = None, statement_type: Optional[str] = None
+    ):
         """
         Clear cache entries.
-        
+
         Parameters:
         -----------
         symbol : Optional[str]
@@ -844,15 +879,23 @@ class FMPProvider(DataProvider):
         """
         if symbol:
             self.cache.invalidate_symbol(symbol, statement_type)
-            logger.info(f"Cleared cache for {symbol}" + (f" {statement_type}" if statement_type else ""))
+            logger.info(
+                f"Cleared cache for {symbol}"
+                + (f" {statement_type}" if statement_type else "")
+            )
         else:
             self.cache.clear_all()
             logger.info("Cleared all cache")
-    
-    def warm_cache(self, symbols: List[str], statement_types: Optional[List[str]] = None, include_prices: bool = True):
+
+    def warm_cache(
+        self,
+        symbols: List[str],
+        statement_types: Optional[List[str]] = None,
+        include_prices: bool = True,
+    ):
         """
         Pre-warm cache for a list of symbols.
-        
+
         Parameters:
         -----------
         symbols : List[str]
@@ -863,10 +906,15 @@ class FMPProvider(DataProvider):
             Whether to cache price data (default: True)
         """
         if statement_types is None:
-            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
-        
+            statement_types = [
+                "income_statement",
+                "balance_sheet",
+                "cash_flow",
+                "financial_ratios",
+            ]
+
         logger.info(f"Warming cache for {len(symbols)} symbols")
-        
+
         for symbol in symbols:
             # Cache financial statements
             for stmt_type in statement_types:
@@ -881,18 +929,20 @@ class FMPProvider(DataProvider):
                         self._fetch_financial_ratios(symbol, limit=20)
                 except Exception as e:
                     logger.error(f"Error warming cache for {symbol} {stmt_type}: {e}")
-            
+
             # Cache price data (full history)
             if include_prices:
                 try:
                     logger.info(f"Caching full price history for {symbol}")
-                    self._fetch_historical_prices(symbol)  # No date range = full history
+                    self._fetch_historical_prices(
+                        symbol
+                    )  # No date range = full history
                 except Exception as e:
                     logger.error(f"Error caching price data for {symbol}: {e}")
-        
+
         stats = self.get_cache_stats()
         logger.info(f"Cache warming complete. Hit rate: {stats.get('hit_rate', 0):.2%}")
-    
+
     def clear_old_price_cache(self):
         """
         Clear old fragmented price cache files (v1.0).
@@ -904,17 +954,17 @@ class FMPProvider(DataProvider):
             if not cache_dir.exists():
                 logger.info("No price cache directory found")
                 return
-            
+
             # Count files before cleanup
             old_files = list(cache_dir.glob("*v1.0.json*"))
             file_count = len(old_files)
-            
+
             if file_count == 0:
                 logger.info("No old price cache files found")
                 return
-            
+
             logger.info(f"Found {file_count} old price cache files to remove")
-            
+
             # Remove old cache files
             removed_count = 0
             for file_path in old_files:
@@ -923,40 +973,46 @@ class FMPProvider(DataProvider):
                     removed_count += 1
                 except Exception as e:
                     logger.warning(f"Could not remove {file_path}: {e}")
-            
+
             logger.info(f"Removed {removed_count}/{file_count} old price cache files")
-            
+
             # Also clear any corrupted cache entries from memory
-            if hasattr(self.cache, '_cache'):
+            if hasattr(self.cache, "_cache"):
                 # Remove any in-memory entries for old price cache
                 keys_to_remove = []
                 for key in self.cache._cache.keys():
-                    if hasattr(key, 'statement_type') and key.statement_type == "price" and key.version == "1.0":
+                    if (
+                        hasattr(key, "statement_type")
+                        and key.statement_type == "price"
+                        and key.version == "1.0"
+                    ):
                         keys_to_remove.append(key)
-                
+
                 for key in keys_to_remove:
                     del self.cache._cache[key]
-                
+
                 if keys_to_remove:
-                    logger.info(f"Cleared {len(keys_to_remove)} old price cache entries from memory")
-                    
+                    logger.info(
+                        f"Cleared {len(keys_to_remove)} old price cache entries from memory"
+                    )
+
         except Exception as e:
             logger.error(f"Error clearing old price cache: {e}")
-    
+
     def migrate_price_cache(self, symbols: Optional[List[str]] = None):
         """
         Migrate from old fragmented price cache to new full-history cache.
-        
+
         Parameters:
         -----------
         symbols : Optional[List[str]]
             Specific symbols to migrate (default: None = migrate all)
         """
         logger.info("Starting price cache migration to optimized format")
-        
+
         # First, clear old cache to free up space
         self.clear_old_price_cache()
-        
+
         # If symbols not specified, get from existing cache or use defaults
         if symbols is None:
             # Try to get symbols from existing statement cache
@@ -971,34 +1027,38 @@ class FMPProvider(DataProvider):
             else:
                 logger.warning("No symbols found in cache, skipping migration")
                 return
-        
+
         # Warm cache with full price history for each symbol
         logger.info(f"Migrating price cache for {len(symbols)} symbols")
         success_count = 0
-        
+
         for i, symbol in enumerate(symbols):
             try:
-                logger.info(f"[{i+1}/{len(symbols)}] Caching full price history for {symbol}")
+                logger.info(
+                    f"[{i+1}/{len(symbols)}] Caching full price history for {symbol}"
+                )
                 self._fetch_historical_prices(symbol)
                 success_count += 1
             except Exception as e:
                 logger.error(f"Failed to cache price history for {symbol}: {e}")
-        
-        logger.info(f"Price cache migration complete: {success_count}/{len(symbols)} symbols cached")
-    
+
+        logger.info(
+            f"Price cache migration complete: {success_count}/{len(symbols)} symbols cached"
+        )
+
     # === Story 3.3: Cache Performance Optimization ===
-    
+
     def batch_fetch_statements(
-        self, 
-        symbols: List[str], 
+        self,
+        symbols: List[str],
         statement_types: Optional[List[str]] = None,
         period: str = "quarter",
         limit: int = 20,
-        use_cache: bool = True
+        use_cache: bool = True,
     ) -> Dict[str, Dict[str, List[Dict]]]:
         """
         Batch fetch multiple statements for multiple symbols efficiently.
-        
+
         Parameters:
         -----------
         symbols : List[str]
@@ -1011,36 +1071,45 @@ class FMPProvider(DataProvider):
             Number of records per statement
         use_cache : bool
             Whether to use cache (default: True)
-            
+
         Returns:
         --------
         Dict[str, Dict[str, List[Dict]]]
             Nested dict: {symbol: {statement_type: data}}
         """
         if statement_types is None:
-            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
-        
+            statement_types = [
+                "income_statement",
+                "balance_sheet",
+                "cash_flow",
+                "financial_ratios",
+            ]
+
         results = {}
         cache_hits = 0
         cache_misses = 0
-        
+
         # First pass: collect all cache keys and check what's already cached
         cache_keys_to_fetch = []
-        
+
         for symbol in symbols:
             results[symbol] = {}
-            
+
             for stmt_type in statement_types:
                 if use_cache:
                     # Create cache key
                     cache_key = CacheKey(
                         symbol=symbol,
                         statement_type=stmt_type,
-                        period="quarterly" if period.lower() in ["quarter", "quarterly"] else "annual",
+                        period=(
+                            "quarterly"
+                            if period.lower() in ["quarter", "quarterly"]
+                            else "annual"
+                        ),
                         limit=limit if stmt_type != "financial_ratios" else None,
-                        version=self.cache_config.cache_version
+                        version=self.cache_config.cache_version,
                     )
-                    
+
                     # Try cache first
                     cached_data = self.cache.get(cache_key)
                     if cached_data is not None:
@@ -1051,39 +1120,43 @@ class FMPProvider(DataProvider):
                         cache_misses += 1
                 else:
                     cache_keys_to_fetch.append((symbol, stmt_type, None))
-        
-        logger.info(f"Batch fetch: {cache_hits} cache hits, {cache_misses} cache misses")
-        
+
+        logger.info(
+            f"Batch fetch: {cache_hits} cache hits, {cache_misses} cache misses"
+        )
+
         # Second pass: fetch missing data
         for symbol, stmt_type, cache_key in cache_keys_to_fetch:
             try:
                 data = None
                 if stmt_type == "income_statement":
-                    data = self._fetch_income_statement(symbol, limit=limit, period=period)
+                    data = self._fetch_income_statement(
+                        symbol, limit=limit, period=period
+                    )
                 elif stmt_type == "balance_sheet":
                     data = self._fetch_balance_sheet(symbol, limit=limit, period=period)
                 elif stmt_type == "cash_flow":
                     data = self._fetch_cash_flow(symbol, limit=limit, period=period)
                 elif stmt_type == "financial_ratios":
                     data = self._fetch_financial_ratios(symbol, limit=limit)
-                
+
                 if data:
                     results[symbol][stmt_type] = data
             except Exception as e:
                 logger.error(f"Error fetching {stmt_type} for {symbol}: {e}")
                 results[symbol][stmt_type] = None
-        
+
         return results
-    
+
     def preload_cache_from_results(
         self,
         results: Dict[str, Dict[str, List[Dict]]],
-        statement_types: Optional[List[str]] = None
+        statement_types: Optional[List[str]] = None,
     ):
         """
         Preload cache from previously fetched results.
         Useful for warming cache from batch operations.
-        
+
         Parameters:
         -----------
         results : Dict[str, Dict[str, List[Dict]]]
@@ -1092,10 +1165,15 @@ class FMPProvider(DataProvider):
             Specific statement types to cache (default: all available)
         """
         if statement_types is None:
-            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
-        
+            statement_types = [
+                "income_statement",
+                "balance_sheet",
+                "cash_flow",
+                "financial_ratios",
+            ]
+
         cached_count = 0
-        
+
         for symbol, symbol_data in results.items():
             for stmt_type, data in symbol_data.items():
                 if stmt_type in statement_types and data:
@@ -1105,24 +1183,24 @@ class FMPProvider(DataProvider):
                         statement_type=stmt_type,
                         period="quarterly",  # Default to quarterly
                         limit=20 if stmt_type != "financial_ratios" else None,
-                        version=self.cache_config.cache_version
+                        version=self.cache_config.cache_version,
                     )
-                    
+
                     # Extract acceptedDate if available
                     if isinstance(data, list) and len(data) > 0:
                         accepted_date = data[0].get("acceptedDate")
                         cache_key.accepted_date = accepted_date
-                    
+
                     # Cache the data
                     self.cache.set(cache_key, data)
                     cached_count += 1
-        
+
         logger.info(f"Preloaded {cached_count} entries into cache")
-    
+
     def get_cache_memory_usage(self) -> Dict[str, Any]:
         """
         Get detailed memory usage statistics for the cache.
-        
+
         Returns:
         --------
         Dict[str, Any]
@@ -1133,106 +1211,123 @@ class FMPProvider(DataProvider):
             "by_statement_type": {},
             "by_symbol": {},
             "compression_ratio": 0,
-            "entry_count": 0
+            "entry_count": 0,
         }
-        
+
         # Get cache directory
         cache_dir = self.cache_config.cache_dir
-        
+
         # Calculate sizes by statement type
-        for stmt_type in ["income_statements", "balance_sheets", "cash_flows", "financial_ratios", "price_data"]:
+        for stmt_type in [
+            "income_statements",
+            "balance_sheets",
+            "cash_flows",
+            "financial_ratios",
+            "price_data",
+        ]:
             type_dir = cache_dir / stmt_type
             if type_dir.exists():
-                type_size = sum(f.stat().st_size for f in type_dir.rglob("*") if f.is_file())
+                type_size = sum(
+                    f.stat().st_size for f in type_dir.rglob("*") if f.is_file()
+                )
                 stats["by_statement_type"][stmt_type] = type_size / (1024 * 1024)  # MB
                 stats["total_size_mb"] += type_size / (1024 * 1024)
                 stats["entry_count"] += len(list(type_dir.glob("*.json*")))
-        
+
         # Estimate compression ratio if enabled
         if self.cache_config.enable_compression:
             # Rough estimate: gzip typically achieves 60-80% compression on JSON
             stats["compression_ratio"] = 0.7  # 70% compression estimate
-        
+
         return stats
-    
+
     def smart_preload_cache(self) -> Dict[str, Any]:
         """
         Intelligently preload cache based on usage patterns.
-        
+
         Returns:
         --------
         Dict[str, Any]
             Preload results and statistics
         """
         import time
+
         start_time = time.time()
-        
+
         # Get preload recommendations
         recommendations = self.preload_strategy.get_preload_recommendations()
-        
+
         # Determine symbols to preload
-        symbols_to_preload = list(set(
-            recommendations.get("high_frequency", [])[:30] +
-            recommendations.get("recent", [])[:20] +
-            recommendations.get("critical", [])[:10]
-        ))
-        
+        symbols_to_preload = list(
+            set(
+                recommendations.get("high_frequency", [])[:30]
+                + recommendations.get("recent", [])[:20]
+                + recommendations.get("critical", [])[:10]
+            )
+        )
+
         if not symbols_to_preload:
             # Fallback to top symbols from access history
             symbols_to_preload = self.preload_strategy.get_preload_symbols(top_n=50)
-        
+
         logger.info(f"Smart preload: Loading {len(symbols_to_preload)} symbols")
-        
+
         # Get optimal batch size
         batch_size = self.preload_strategy.get_optimal_batch_size()
-        
+
         # Batch fetch with optimized settings
         all_results = {}
         success_count = 0
-        
+
         for i in range(0, len(symbols_to_preload), batch_size):
-            batch = symbols_to_preload[i:i + batch_size]
-            
+            batch = symbols_to_preload[i : i + batch_size]
+
             try:
                 # Use batch fetch for efficiency
                 results = self.batch_fetch_statements(
                     symbols=batch,
-                    statement_types=["income_statement", "balance_sheet", "financial_ratios"],
+                    statement_types=[
+                        "income_statement",
+                        "balance_sheet",
+                        "financial_ratios",
+                    ],
                     period="quarter",
                     limit=20,
-                    use_cache=True
+                    use_cache=True,
                 )
-                
+
                 all_results.update(results)
-                
+
                 # Count successes
                 for symbol, data in results.items():
                     if any(v for v in data.values() if v):
                         success_count += 1
-                        
+
             except Exception as e:
                 logger.error(f"Error in smart preload batch: {e}")
-        
+
         # Record preload operation
         duration = time.time() - start_time
-        self.preload_strategy.record_preload(symbols_to_preload, duration, success_count)
-        
+        self.preload_strategy.record_preload(
+            symbols_to_preload, duration, success_count
+        )
+
         # Get cache health
         cache_analysis = self.cache_optimizer.analyze_cache_performance()
-        
+
         return {
             "symbols_loaded": len(symbols_to_preload),
             "success_count": success_count,
             "duration": duration,
             "rate": success_count / duration if duration > 0 else 0,
             "cache_health": cache_analysis["health"],
-            "recommendations": cache_analysis["recommendations"]
+            "recommendations": cache_analysis["recommendations"],
         }
-    
+
     def optimize_cache_settings(self) -> Dict[str, Any]:
         """
         Optimize cache settings based on usage patterns.
-        
+
         Returns:
         --------
         Dict[str, Any]
@@ -1240,29 +1335,33 @@ class FMPProvider(DataProvider):
         """
         # Get current performance
         analysis = self.cache_optimizer.analyze_cache_performance()
-        
+
         # Get TTL recommendations
         ttl_recommendations = self.cache_optimizer.optimize_ttl_settings()
-        
+
         # Apply recommendations if needed
         applied_changes = []
-        
+
         if analysis["health"] < 80:
             # Apply TTL optimizations
             for stmt_type, recommended_ttl in ttl_recommendations.items():
                 current_ttl = getattr(self.cache_config, f"{stmt_type}_ttl", None)
-                if current_ttl and abs(current_ttl - recommended_ttl) > 3600:  # > 1 hour difference
+                if (
+                    current_ttl and abs(current_ttl - recommended_ttl) > 3600
+                ):  # > 1 hour difference
                     setattr(self.cache_config, f"{stmt_type}_ttl", recommended_ttl)
-                    applied_changes.append(f"Adjusted {stmt_type} TTL to {recommended_ttl/3600:.1f} hours")
-        
+                    applied_changes.append(
+                        f"Adjusted {stmt_type} TTL to {recommended_ttl/3600:.1f} hours"
+                    )
+
         return {
             "cache_health": analysis["health"],
             "performance": analysis["performance"],
             "recommendations": analysis["recommendations"],
             "applied_changes": applied_changes,
-            "ttl_settings": ttl_recommendations
+            "ttl_settings": ttl_recommendations,
         }
-    
+
     # === Story 1.3: Data Validation and Cleaning ===
 
     def _validate_financial_data(self, data: List[Dict], data_type: str) -> List[Dict]:
@@ -1807,7 +1906,9 @@ class FMPProvider(DataProvider):
         # Use basic shares (not diluted) for market cap calculation
         if quarters and quarters[0].get("weightedAverageShsOut"):
             trailing_12m["shares_outstanding"] = quarters[0]["weightedAverageShsOut"]
-            logger.debug(f"Shares outstanding: {trailing_12m['shares_outstanding']:,.0f}")
+            logger.debug(
+                f"Shares outstanding: {trailing_12m['shares_outstanding']:,.0f}"
+            )
 
         return trailing_12m
 
@@ -1984,9 +2085,11 @@ class FMPProvider(DataProvider):
                     if ratio_name == "pe_ratio":
                         net_income = ttm.get("netIncome")
                         shares_out = ttm.get("shares_outstanding")
-                        
+
                         if net_income and shares_out and net_income > 0:
-                            market_cap = self._calculate_market_cap(symbol, as_of_date, shares_out)
+                            market_cap = self._calculate_market_cap(
+                                symbol, as_of_date, shares_out
+                            )
                             if market_cap:
                                 ratio_value = market_cap / net_income
                                 logger.debug(
@@ -1996,9 +2099,11 @@ class FMPProvider(DataProvider):
                     elif ratio_name == "pb_ratio":
                         book_value = balance_sheet.get("totalStockholdersEquity")
                         shares_out = ttm.get("shares_outstanding")
-                        
+
                         if book_value and shares_out and book_value > 0:
-                            market_cap = self._calculate_market_cap(symbol, as_of_date, shares_out)
+                            market_cap = self._calculate_market_cap(
+                                symbol, as_of_date, shares_out
+                            )
                             if market_cap:
                                 ratio_value = market_cap / book_value
                                 logger.debug(
@@ -2075,18 +2180,15 @@ class FMPProvider(DataProvider):
         return result
 
     def _calculate_market_cap(
-        self,
-        symbol: str,
-        as_of_date: Union[str, datetime],
-        shares_outstanding: float
+        self, symbol: str, as_of_date: Union[str, datetime], shares_outstanding: float
     ) -> Optional[float]:
         """
         Calculate market capitalization using price and shares outstanding.
-        
+
         This method fetches the stock price as of the given date and multiplies
         by shares outstanding to get market cap. Handles weekends/holidays by
         using the most recent trading day.
-        
+
         Parameters:
         -----------
         symbol : str
@@ -2095,7 +2197,7 @@ class FMPProvider(DataProvider):
             Date for market cap calculation
         shares_outstanding : float
             Number of shares outstanding
-            
+
         Returns:
         --------
         Optional[float]
@@ -2107,74 +2209,76 @@ class FMPProvider(DataProvider):
                 as_of_date_str = as_of_date.strftime("%Y-%m-%d")
             else:
                 as_of_date_str = str(as_of_date)
-            
+
             # Fetch price for a small window around the date (handle weekends)
             # Get 5 days of data to ensure we have at least one trading day
             from_date = pd.to_datetime(as_of_date_str) - timedelta(days=5)
             from_date_str = from_date.strftime("%Y-%m-%d")
-            
+
             logger.debug(f"Fetching price for {symbol} around {as_of_date_str}")
-            
+
             # Fetch historical prices
             price_data = self._fetch_historical_prices(
-                symbol,
-                from_date=from_date_str,
-                to_date=as_of_date_str
+                symbol, from_date=from_date_str, to_date=as_of_date_str
             )
-            
+
             if not price_data:
-                logger.warning(f"No price data available for {symbol} as of {as_of_date_str}")
+                logger.warning(
+                    f"No price data available for {symbol} as of {as_of_date_str}"
+                )
                 return None
-            
+
             # Convert to DataFrame for easier manipulation
             price_df = pd.DataFrame(price_data)
-            price_df['date'] = pd.to_datetime(price_df['date'])
-            price_df.set_index('date', inplace=True)
+            price_df["date"] = pd.to_datetime(price_df["date"])
+            price_df.set_index("date", inplace=True)
             price_df.sort_index(inplace=True)
-            
+
             # Get the most recent price up to and including as_of_date
             as_of_dt = pd.to_datetime(as_of_date_str)
             valid_prices = price_df[price_df.index <= as_of_dt]
-            
+
             if valid_prices.empty:
-                logger.warning(f"No price data available for {symbol} on or before {as_of_date_str}")
+                logger.warning(
+                    f"No price data available for {symbol} on or before {as_of_date_str}"
+                )
                 return None
-            
+
             # Use the most recent available price (handles weekends/holidays)
             latest_price_row = valid_prices.iloc[-1]
             price_date = valid_prices.index[-1]
-            price = latest_price_row['close']  # Use closing price
-            
+            price = latest_price_row["close"]  # Use closing price
+
             # Calculate market cap
             market_cap = price * shares_outstanding
-            
+
             logger.debug(
                 f"Market cap for {symbol}: ${price:.2f} × {shares_outstanding:,.0f} = ${market_cap:,.0f} "
                 f"(price date: {price_date.strftime('%Y-%m-%d')})"
             )
-            
+
             return market_cap
-            
+
         except Exception as e:
             logger.error(f"Error calculating market cap for {symbol}: {e}")
             return None
 
     # === Epic 5: Public API for Notebook Integration ===
-    
+
     def get_fundamental_factors(
         self,
         symbols: Union[str, List[str]],
         start_date: Union[str, datetime],
         end_date: Union[str, datetime],
         frequency: str = "daily",
-        calculation_frequency: str = "W"
+        calculation_frequency: str = "W",
     ) -> Dict[str, pd.DataFrame]:
         """
         Get fundamental factor data for multiple symbols in notebook-compatible format.
-        
+
         This method fetches fundamental data and calculates key financial ratios,
         returning them in a format suitable for factor analysis notebooks.
-        
+
         Parameters:
         -----------
         symbols : Union[str, List[str]]
@@ -2188,7 +2292,7 @@ class FMPProvider(DataProvider):
         calculation_frequency : str
             How often to calculate ratios: 'D' (daily), 'W' (weekly), 'M' (monthly)
             Default is 'W' for weekly calculations to balance accuracy and efficiency
-            
+
         Returns:
         --------
         Dict[str, pd.DataFrame]
@@ -2199,198 +2303,249 @@ class FMPProvider(DataProvider):
         """
         if isinstance(symbols, str):
             symbols = [symbols]
-            
+
         # Parse dates
         if isinstance(start_date, str):
             start_date = pd.to_datetime(start_date)
         if isinstance(end_date, str):
             end_date = pd.to_datetime(end_date)
-            
-        logger.info(f"Fetching fundamental factors for {len(symbols)} symbols from {start_date} to {end_date}")
-        
+
+        logger.info(
+            f"Fetching fundamental factors for {len(symbols)} symbols from {start_date} to {end_date}"
+        )
+
         fundamental_data = {}
-        
+
         for symbol in symbols:
             try:
                 logger.info(f"Processing fundamental data for {symbol}")
-                
+
                 # Step 1: Get trading days from price data
-                logger.debug(f"Fetching price data to determine trading days for {symbol}")
+                logger.debug(
+                    f"Fetching price data to determine trading days for {symbol}"
+                )
                 price_data = self.get_prices(
                     symbols=[symbol],
                     start_date=str(start_date),
                     end_date=str(end_date),
-                    price_type="close"
+                    price_type="close",
                 )
-                
+
                 if price_data.empty:
                     logger.warning(f"No price data available for {symbol}")
                     fundamental_data[symbol] = pd.DataFrame()
                     continue
-                
+
                 trading_days = price_data.index
                 logger.debug(f"Found {len(trading_days)} trading days for {symbol}")
-                
+
                 # Step 2: Get quarterly reporting dates and build fundamental timeline
-                sample_statements = self._fetch_income_statement(
-                    symbol, 
-                    limit=20,
-                    period="quarter"
+                # PERFORMANCE FIX: Calculate how many quarters we actually need based on date range
+                from datetime import timedelta
+
+                years_needed = (
+                    (end_date - start_date).days / 365
+                ) + 1  # Add 1 year for TTM lookback
+                quarters_needed = max(
+                    8, int(years_needed * 4)
+                )  # Minimum 8 quarters, or calculated amount
+                quarters_needed = min(
+                    quarters_needed, 20
+                )  # Cap at 20 to avoid over-fetching
+
+                logger.debug(
+                    f"Fetching {quarters_needed} quarters for {symbol} (date range: {years_needed:.1f} years)"
                 )
-                
+
+                sample_statements = self._fetch_income_statement(
+                    symbol, limit=quarters_needed, period="quarter"
+                )
+
                 if not sample_statements:
                     logger.warning(f"No quarterly statements found for {symbol}")
                     fundamental_data[symbol] = pd.DataFrame()
                     continue
-                
+
                 # Build fundamental data timeline
                 fundamental_timeline = []
                 validated_statements = self._validate_financial_data(
-                    sample_statements, 
-                    "income_statement"
+                    sample_statements, "income_statement"
                 )
-                
+
                 # Get all relevant quarters
                 for statement in validated_statements:
-                    if 'date' in statement and 'acceptedDate' in statement:
-                        quarter_end = pd.to_datetime(statement['date'])
-                        report_date = pd.to_datetime(statement['acceptedDate'])
-                        
+                    if "date" in statement and "acceptedDate" in statement:
+                        quarter_end = pd.to_datetime(statement["date"])
+                        report_date = pd.to_datetime(statement["acceptedDate"])
+
                         # Only include quarters that could affect our date range
                         if report_date <= end_date + timedelta(days=90):
-                            fundamental_timeline.append({
-                                'quarter_end': quarter_end,
-                                'report_date': report_date
-                            })
-                
+                            fundamental_timeline.append(
+                                {"quarter_end": quarter_end, "report_date": report_date}
+                            )
+
                 # Sort by report date
-                fundamental_timeline.sort(key=lambda x: x['report_date'])
-                logger.info(f"Found {len(fundamental_timeline)} quarters in timeline for {symbol}")
-                
+                fundamental_timeline.sort(key=lambda x: x["report_date"])
+                logger.info(
+                    f"Found {len(fundamental_timeline)} quarters in timeline for {symbol}"
+                )
+
                 # Step 3: Determine calculation dates
                 calculation_dates = set()
-                
+
                 # Add regular intervals based on calculation_frequency
-                if calculation_frequency == 'D':
+                if calculation_frequency == "D":
                     # Daily calculations (expensive!)
                     calculation_dates.update(trading_days)
-                elif calculation_frequency == 'W':
+                elif calculation_frequency == "W":
                     # Weekly - every Friday that's a trading day
                     weekly_dates = trading_days[trading_days.weekday == 4]
                     calculation_dates.update(weekly_dates)
-                elif calculation_frequency == 'M':
+                elif calculation_frequency == "M":
                     # Monthly - last trading day of each month
-                    monthly_dates = price_data.resample('ME').last().index
+                    monthly_dates = price_data.resample("ME").last().index
                     calculation_dates.update(monthly_dates)
-                
+
                 # Include key dates for more accurate transitions
                 for item in fundamental_timeline:
                     # Add quarter end dates if they're trading days
-                    if item['quarter_end'] in trading_days:
-                        calculation_dates.add(item['quarter_end'])
-                    
+                    if item["quarter_end"] in trading_days:
+                        calculation_dates.add(item["quarter_end"])
+
                     # Add report dates if they're trading days
-                    if item['report_date'] in trading_days:
-                        calculation_dates.add(item['report_date'])
-                
+                    if item["report_date"] in trading_days:
+                        calculation_dates.add(item["report_date"])
+
                 calculation_dates = sorted(calculation_dates)
-                logger.debug(f"Will calculate ratios for {len(calculation_dates)} dates")
-                
+                logger.debug(
+                    f"Will calculate ratios for {len(calculation_dates)} dates"
+                )
+
                 # Step 4: Get TTM data for each quarter
                 quarter_fundamentals = {}
                 for timeline_item in fundamental_timeline:
-                    quarter_date = timeline_item['quarter_end']
+                    quarter_date = timeline_item["quarter_end"]
                     if start_date - timedelta(days=365) <= quarter_date <= end_date:
                         try:
                             ttm_data = self._get_trailing_12m_data(symbol, quarter_date)
                             if ttm_data["metadata"]["calculation_successful"]:
                                 quarter_fundamentals[quarter_date] = {
-                                    'ttm_data': ttm_data,
-                                    'report_date': timeline_item['report_date']
+                                    "ttm_data": ttm_data,
+                                    "report_date": timeline_item["report_date"],
                                 }
                         except Exception as e:
-                            logger.warning(f"Could not get TTM data for {symbol} Q{quarter_date}: {e}")
-                
+                            logger.warning(
+                                f"Could not get TTM data for {symbol} Q{quarter_date}: {e}"
+                            )
+
                 # Step 5: Calculate ratios for each calculation date
                 daily_data = []
-                
+
                 for calc_date in calculation_dates:
                     # Find applicable quarter (most recent reported as of calc_date)
                     applicable_quarter = None
                     applicable_quarter_date = None
-                    
+
                     for quarter_date, quarter_info in quarter_fundamentals.items():
-                        if quarter_info['report_date'].date() <= calc_date.date():
-                            if applicable_quarter is None or quarter_info['report_date'] > applicable_quarter['report_date']:
+                        if quarter_info["report_date"].date() <= calc_date.date():
+                            if (
+                                applicable_quarter is None
+                                or quarter_info["report_date"]
+                                > applicable_quarter["report_date"]
+                            ):
                                 applicable_quarter = quarter_info
                                 applicable_quarter_date = quarter_date
-                    
+
                     if applicable_quarter:
                         try:
                             # Calculate ratios using this quarter's fundamentals
-                            ttm = applicable_quarter['ttm_data']['trailing_12m']
-                            bs = applicable_quarter['ttm_data']['balance_sheet']
-                            
+                            ttm = applicable_quarter["ttm_data"]["trailing_12m"]
+                            bs = applicable_quarter["ttm_data"]["balance_sheet"]
+
                             # Get shares outstanding
-                            shares = ttm.get('shares_outstanding')
-                            
+                            shares = ttm.get("shares_outstanding")
+
                             # Calculate market cap for current date
                             market_cap = None
                             if shares and not pd.isna(shares):
-                                market_cap = self._calculate_market_cap(symbol, calc_date, shares)
-                            
+                                market_cap = self._calculate_market_cap(
+                                    symbol, calc_date, shares
+                                )
+
                             # Calculate ratios
                             pe_ratio = None
-                            if market_cap and ttm.get('netIncome') and ttm['netIncome'] > 0:
-                                pe_ratio = market_cap / ttm['netIncome']
-                            
+                            if (
+                                market_cap
+                                and ttm.get("netIncome")
+                                and ttm["netIncome"] > 0
+                            ):
+                                pe_ratio = market_cap / ttm["netIncome"]
+
                             pb_ratio = None
-                            if market_cap and bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] > 0:
-                                pb_ratio = market_cap / bs['totalStockholdersEquity']
-                            
+                            if (
+                                market_cap
+                                and bs.get("totalStockholdersEquity")
+                                and bs["totalStockholdersEquity"] > 0
+                            ):
+                                pb_ratio = market_cap / bs["totalStockholdersEquity"]
+
                             roe = None
-                            if ttm.get('netIncome') and bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] > 0:
-                                roe = ttm['netIncome'] / bs['totalStockholdersEquity']
-                            
+                            if (
+                                ttm.get("netIncome")
+                                and bs.get("totalStockholdersEquity")
+                                and bs["totalStockholdersEquity"] > 0
+                            ):
+                                roe = ttm["netIncome"] / bs["totalStockholdersEquity"]
+
                             debt_equity = None
-                            if bs.get('totalStockholdersEquity') and bs['totalStockholdersEquity'] != 0:
-                                debt_equity = bs.get('totalDebt', 0) / bs['totalStockholdersEquity']
-                            
+                            if (
+                                bs.get("totalStockholdersEquity")
+                                and bs["totalStockholdersEquity"] != 0
+                            ):
+                                debt_equity = (
+                                    bs.get("totalDebt", 0)
+                                    / bs["totalStockholdersEquity"]
+                                )
+
                             # Build row
                             row = {
-                                'date': calc_date,
-                                'PE_ratio': pe_ratio,
-                                'PB_ratio': pb_ratio,
-                                'ROE': roe,
-                                'Debt_Equity': debt_equity
+                                "date": calc_date,
+                                "PE_ratio": pe_ratio,
+                                "PB_ratio": pb_ratio,
+                                "ROE": roe,
+                                "Debt_Equity": debt_equity,
                             }
-                            
+
                             daily_data.append(row)
-                            
+
                         except Exception as e:
-                            logger.debug(f"Could not calculate ratios for {symbol} on {calc_date}: {e}")
-                
+                            logger.debug(
+                                f"Could not calculate ratios for {symbol} on {calc_date}: {e}"
+                            )
+
                 # Step 6: Convert to DataFrame and reindex to all trading days
                 if daily_data:
                     df = pd.DataFrame(daily_data)
-                    df.set_index('date', inplace=True)
-                    
+                    df.set_index("date", inplace=True)
+
                     # Reindex to ALL trading days and forward-fill
-                    df = df.reindex(trading_days, method='ffill')
-                    
+                    df = df.reindex(trading_days, method="ffill")
+
                     # Also backward fill for any leading NaNs
                     df = df.bfill()
-                    
+
                     fundamental_data[symbol] = df
                 else:
                     logger.warning(f"No fundamental data calculated for {symbol}")
                     fundamental_data[symbol] = pd.DataFrame()
-                    
+
             except Exception as e:
                 logger.error(f"Error fetching fundamental data for {symbol}: {e}")
                 fundamental_data[symbol] = pd.DataFrame()
-        
-        logger.info(f"Completed fundamental factor fetch for {len(fundamental_data)} symbols")
+
+        logger.info(
+            f"Completed fundamental factor fetch for {len(fundamental_data)} symbols"
+        )
         return fundamental_data
 
     def get_prices(
@@ -2398,11 +2553,11 @@ class FMPProvider(DataProvider):
         symbols: Union[str, List[str]],
         start_date: str,
         end_date: str,
-        price_type: str = "close"
+        price_type: str = "close",
     ) -> pd.DataFrame:
         """
         Get historical price data in DataManager-compatible format.
-        
+
         Parameters:
         -----------
         symbols : Union[str, List[str]]
@@ -2413,7 +2568,7 @@ class FMPProvider(DataProvider):
             End date in YYYY-MM-DD format
         price_type : str
             Type of price ('open', 'high', 'low', 'close', 'adjClose', 'vwap')
-            
+
         Returns:
         --------
         pd.DataFrame
@@ -2421,55 +2576,57 @@ class FMPProvider(DataProvider):
         """
         if isinstance(symbols, str):
             symbols = [symbols]
-            
-        logger.info(f"Fetching price data for {len(symbols)} symbols from {start_date} to {end_date}")
-        
+
+        logger.info(
+            f"Fetching price data for {len(symbols)} symbols from {start_date} to {end_date}"
+        )
+
         price_data = {}
-        
+
         for symbol in symbols:
             try:
                 # Fetch historical prices
                 historical_data = self._fetch_historical_prices(
-                    symbol, 
-                    from_date=start_date,
-                    to_date=end_date
+                    symbol, from_date=start_date, to_date=end_date
                 )
-                
+
                 if historical_data:
                     # Convert to DataFrame
                     df = pd.DataFrame(historical_data)
-                    
+
                     # Parse dates and set as index
-                    df['date'] = pd.to_datetime(df['date'])
-                    df.set_index('date', inplace=True)
-                    
+                    df["date"] = pd.to_datetime(df["date"])
+                    df.set_index("date", inplace=True)
+
                     # Sort by date (FMP returns newest first)
                     df.sort_index(inplace=True)
-                    
+
                     # Extract requested price type
                     if price_type in df.columns:
                         price_data[symbol] = df[price_type]
                     else:
-                        logger.warning(f"Price type '{price_type}' not found for {symbol}, using 'close'")
-                        price_data[symbol] = df['close']
+                        logger.warning(
+                            f"Price type '{price_type}' not found for {symbol}, using 'close'"
+                        )
+                        price_data[symbol] = df["close"]
                 else:
                     logger.warning(f"No price data found for {symbol}")
-                    
+
             except Exception as e:
                 logger.error(f"Error fetching price data for {symbol}: {e}")
-        
+
         # Combine all price series into a single DataFrame
         if price_data:
             prices_df = pd.DataFrame(price_data)
-            
+
             # Fill missing dates with NaN (align all series)
             # Use business days for financial data (exclude weekends)
-            all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
+            all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
             prices_df = prices_df.reindex(all_dates)
-            
+
             # Forward fill missing values (weekends/holidays)
             prices_df = prices_df.ffill()
-            
+
             logger.info(f"Successfully fetched price data: {prices_df.shape}")
             return prices_df
         else:
