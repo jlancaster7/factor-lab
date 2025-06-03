@@ -1698,7 +1698,8 @@ class FMPProvider(DataProvider):
             prices_df = pd.DataFrame(price_data)
             
             # Fill missing dates with NaN (align all series)
-            all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            # Use business days for financial data (exclude weekends)
+            all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
             prices_df = prices_df.reindex(all_dates)
             
             # Forward fill missing values (weekends/holidays)
