@@ -230,6 +230,11 @@ class FMPProvider(DataProvider):
         self.cache_config = cache_config or CacheConfig.from_env()
         self.cache = CacheManager(self.cache_config)
         logger.info(f"Initialized cache with directory: {self.cache_config.cache_dir}")
+        
+        # Initialize cache optimization
+        from ..cache import CachePreloadStrategy, CacheOptimizer
+        self.preload_strategy = CachePreloadStrategy(self.cache_config.cache_dir)
+        self.cache_optimizer = CacheOptimizer(self.cache)
 
         logger.info(
             f"Initialized FMP Provider with API key: {'*' * 10}{self.api_key[-4:]}"
@@ -422,6 +427,8 @@ class FMPProvider(DataProvider):
         cached_data = self.cache.get(cache_key)
         if cached_data is not None:
             logger.debug(f"Cache hit for {symbol} {statement_type} ({period})")
+            # Track access for preload optimization
+            self.preload_strategy.track_access(symbol, statement_type)
             return cached_data
         
         # Cache miss - fetch from API
@@ -678,6 +685,283 @@ class FMPProvider(DataProvider):
         
         stats = self.get_cache_stats()
         logger.info(f"Cache warming complete. Hit rate: {stats.get('hit_rate', 0):.2%}")
+    
+    # === Story 3.3: Cache Performance Optimization ===
+    
+    def batch_fetch_statements(
+        self, 
+        symbols: List[str], 
+        statement_types: Optional[List[str]] = None,
+        period: str = "quarter",
+        limit: int = 20,
+        use_cache: bool = True
+    ) -> Dict[str, Dict[str, List[Dict]]]:
+        """
+        Batch fetch multiple statements for multiple symbols efficiently.
+        
+        Parameters:
+        -----------
+        symbols : List[str]
+            List of symbols to fetch
+        statement_types : Optional[List[str]]
+            Statement types to fetch (default: all)
+        period : str
+            Period type (annual/quarter)
+        limit : int
+            Number of records per statement
+        use_cache : bool
+            Whether to use cache (default: True)
+            
+        Returns:
+        --------
+        Dict[str, Dict[str, List[Dict]]]
+            Nested dict: {symbol: {statement_type: data}}
+        """
+        if statement_types is None:
+            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
+        
+        results = {}
+        cache_hits = 0
+        cache_misses = 0
+        
+        # First pass: collect all cache keys and check what's already cached
+        cache_keys_to_fetch = []
+        
+        for symbol in symbols:
+            results[symbol] = {}
+            
+            for stmt_type in statement_types:
+                if use_cache:
+                    # Create cache key
+                    cache_key = CacheKey(
+                        symbol=symbol,
+                        statement_type=stmt_type,
+                        period="quarterly" if period.lower() in ["quarter", "quarterly"] else "annual",
+                        limit=limit if stmt_type != "financial_ratios" else None,
+                        version=self.cache_config.cache_version
+                    )
+                    
+                    # Try cache first
+                    cached_data = self.cache.get(cache_key)
+                    if cached_data is not None:
+                        results[symbol][stmt_type] = cached_data
+                        cache_hits += 1
+                    else:
+                        cache_keys_to_fetch.append((symbol, stmt_type, cache_key))
+                        cache_misses += 1
+                else:
+                    cache_keys_to_fetch.append((symbol, stmt_type, None))
+        
+        logger.info(f"Batch fetch: {cache_hits} cache hits, {cache_misses} cache misses")
+        
+        # Second pass: fetch missing data
+        for symbol, stmt_type, cache_key in cache_keys_to_fetch:
+            try:
+                data = None
+                if stmt_type == "income_statement":
+                    data = self._fetch_income_statement(symbol, limit=limit, period=period)
+                elif stmt_type == "balance_sheet":
+                    data = self._fetch_balance_sheet(symbol, limit=limit, period=period)
+                elif stmt_type == "cash_flow":
+                    data = self._fetch_cash_flow(symbol, limit=limit, period=period)
+                elif stmt_type == "financial_ratios":
+                    data = self._fetch_financial_ratios(symbol, limit=limit)
+                
+                if data:
+                    results[symbol][stmt_type] = data
+            except Exception as e:
+                logger.error(f"Error fetching {stmt_type} for {symbol}: {e}")
+                results[symbol][stmt_type] = None
+        
+        return results
+    
+    def preload_cache_from_results(
+        self,
+        results: Dict[str, Dict[str, List[Dict]]],
+        statement_types: Optional[List[str]] = None
+    ):
+        """
+        Preload cache from previously fetched results.
+        Useful for warming cache from batch operations.
+        
+        Parameters:
+        -----------
+        results : Dict[str, Dict[str, List[Dict]]]
+            Results from batch_fetch_statements or similar
+        statement_types : Optional[List[str]]
+            Specific statement types to cache (default: all available)
+        """
+        if statement_types is None:
+            statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
+        
+        cached_count = 0
+        
+        for symbol, symbol_data in results.items():
+            for stmt_type, data in symbol_data.items():
+                if stmt_type in statement_types and data:
+                    # Create cache key
+                    cache_key = CacheKey(
+                        symbol=symbol,
+                        statement_type=stmt_type,
+                        period="quarterly",  # Default to quarterly
+                        limit=20 if stmt_type != "financial_ratios" else None,
+                        version=self.cache_config.cache_version
+                    )
+                    
+                    # Extract acceptedDate if available
+                    if isinstance(data, list) and len(data) > 0:
+                        accepted_date = data[0].get("acceptedDate")
+                        cache_key.accepted_date = accepted_date
+                    
+                    # Cache the data
+                    self.cache.set(cache_key, data)
+                    cached_count += 1
+        
+        logger.info(f"Preloaded {cached_count} entries into cache")
+    
+    def get_cache_memory_usage(self) -> Dict[str, Any]:
+        """
+        Get detailed memory usage statistics for the cache.
+        
+        Returns:
+        --------
+        Dict[str, Any]
+            Memory usage statistics by statement type
+        """
+        stats = {
+            "total_size_mb": 0,
+            "by_statement_type": {},
+            "by_symbol": {},
+            "compression_ratio": 0,
+            "entry_count": 0
+        }
+        
+        # Get cache directory
+        cache_dir = self.cache_config.cache_dir
+        
+        # Calculate sizes by statement type
+        for stmt_type in ["income_statements", "balance_sheets", "cash_flows", "financial_ratios", "price_data"]:
+            type_dir = cache_dir / stmt_type
+            if type_dir.exists():
+                type_size = sum(f.stat().st_size for f in type_dir.rglob("*") if f.is_file())
+                stats["by_statement_type"][stmt_type] = type_size / (1024 * 1024)  # MB
+                stats["total_size_mb"] += type_size / (1024 * 1024)
+                stats["entry_count"] += len(list(type_dir.glob("*.json*")))
+        
+        # Estimate compression ratio if enabled
+        if self.cache_config.enable_compression:
+            # Rough estimate: gzip typically achieves 60-80% compression on JSON
+            stats["compression_ratio"] = 0.7  # 70% compression estimate
+        
+        return stats
+    
+    def smart_preload_cache(self) -> Dict[str, Any]:
+        """
+        Intelligently preload cache based on usage patterns.
+        
+        Returns:
+        --------
+        Dict[str, Any]
+            Preload results and statistics
+        """
+        import time
+        start_time = time.time()
+        
+        # Get preload recommendations
+        recommendations = self.preload_strategy.get_preload_recommendations()
+        
+        # Determine symbols to preload
+        symbols_to_preload = list(set(
+            recommendations.get("high_frequency", [])[:30] +
+            recommendations.get("recent", [])[:20] +
+            recommendations.get("critical", [])[:10]
+        ))
+        
+        if not symbols_to_preload:
+            # Fallback to top symbols from access history
+            symbols_to_preload = self.preload_strategy.get_preload_symbols(top_n=50)
+        
+        logger.info(f"Smart preload: Loading {len(symbols_to_preload)} symbols")
+        
+        # Get optimal batch size
+        batch_size = self.preload_strategy.get_optimal_batch_size()
+        
+        # Batch fetch with optimized settings
+        all_results = {}
+        success_count = 0
+        
+        for i in range(0, len(symbols_to_preload), batch_size):
+            batch = symbols_to_preload[i:i + batch_size]
+            
+            try:
+                # Use batch fetch for efficiency
+                results = self.batch_fetch_statements(
+                    symbols=batch,
+                    statement_types=["income_statement", "balance_sheet", "financial_ratios"],
+                    period="quarter",
+                    limit=20,
+                    use_cache=True
+                )
+                
+                all_results.update(results)
+                
+                # Count successes
+                for symbol, data in results.items():
+                    if any(v for v in data.values() if v):
+                        success_count += 1
+                        
+            except Exception as e:
+                logger.error(f"Error in smart preload batch: {e}")
+        
+        # Record preload operation
+        duration = time.time() - start_time
+        self.preload_strategy.record_preload(symbols_to_preload, duration, success_count)
+        
+        # Get cache health
+        cache_analysis = self.cache_optimizer.analyze_cache_performance()
+        
+        return {
+            "symbols_loaded": len(symbols_to_preload),
+            "success_count": success_count,
+            "duration": duration,
+            "rate": success_count / duration if duration > 0 else 0,
+            "cache_health": cache_analysis["health"],
+            "recommendations": cache_analysis["recommendations"]
+        }
+    
+    def optimize_cache_settings(self) -> Dict[str, Any]:
+        """
+        Optimize cache settings based on usage patterns.
+        
+        Returns:
+        --------
+        Dict[str, Any]
+            Optimization results
+        """
+        # Get current performance
+        analysis = self.cache_optimizer.analyze_cache_performance()
+        
+        # Get TTL recommendations
+        ttl_recommendations = self.cache_optimizer.optimize_ttl_settings()
+        
+        # Apply recommendations if needed
+        applied_changes = []
+        
+        if analysis["health"] < 80:
+            # Apply TTL optimizations
+            for stmt_type, recommended_ttl in ttl_recommendations.items():
+                current_ttl = getattr(self.cache_config, f"{stmt_type}_ttl", None)
+                if current_ttl and abs(current_ttl - recommended_ttl) > 3600:  # > 1 hour difference
+                    setattr(self.cache_config, f"{stmt_type}_ttl", recommended_ttl)
+                    applied_changes.append(f"Adjusted {stmt_type} TTL to {recommended_ttl/3600:.1f} hours")
+        
+        return {
+            "cache_health": analysis["health"],
+            "performance": analysis["performance"],
+            "recommendations": analysis["recommendations"],
+            "applied_changes": applied_changes,
+            "ttl_settings": ttl_recommendations
+        }
     
     # === Story 1.3: Data Validation and Cleaning ===
 

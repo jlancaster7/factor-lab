@@ -11,5 +11,6 @@ This module implements a sophisticated caching system to:
 from .cache_manager import CacheManager
 from .cache_key import CacheKey
 from .cache_config import CacheConfig
+from .cache_strategies import CachePreloadStrategy, CacheOptimizer
 
-__all__ = ["CacheManager", "CacheKey", "CacheConfig"]
+__all__ = ["CacheManager", "CacheKey", "CacheConfig", "CachePreloadStrategy", "CacheOptimizer"]
