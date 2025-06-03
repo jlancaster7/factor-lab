@@ -45,7 +45,7 @@ class CacheKey:
             raise ValueError(f"Invalid statement type: {self.statement_type}")
         
         # Validate period
-        valid_periods = ["quarterly", "annual", "daily"]
+        valid_periods = ["quarterly", "annual", "daily", "full_history"]
         if self.period not in valid_periods:
             raise ValueError(f"Invalid period: {self.period}")
         

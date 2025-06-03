@@ -12,11 +12,32 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import pandas as pd
+import numpy as np
 
 from .cache_key import CacheKey
 from .cache_config import CacheConfig
 
 logger = logging.getLogger(__name__)
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles pandas Timestamp and numpy types."""
+    
+    def default(self, obj):
+        if isinstance(obj, (pd.Timestamp, datetime)):
+            return obj.isoformat()
+        elif isinstance(obj, pd.Timedelta):
+            return str(obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif pd.isna(obj):
+            return None
+        return super().default(obj)
 
 
 class CacheStatistics:
@@ -183,6 +204,9 @@ class CacheManager:
             file_path = self._get_file_path(key)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Clean the cache entry to ensure it's JSON serializable
+            cache_entry = self._clean_for_json(cache_entry)
+            
             # Write data (returns actual path used)
             actual_path = self._write_cache_file(file_path, cache_entry)
             
@@ -285,6 +309,44 @@ class CacheManager:
         
         return stats
     
+    def _clean_for_json(self, obj: Any) -> Any:
+        """Recursively clean data for JSON serialization."""
+        if isinstance(obj, dict):
+            return {k: self._clean_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._clean_for_json(item) for item in obj]
+        elif isinstance(obj, pd.DataFrame):
+            # Convert DataFrame to dict with ISO format for datetime index/columns
+            df_dict = {
+                '_type': 'DataFrame',
+                'index': self._clean_for_json(obj.index.tolist()),
+                'columns': self._clean_for_json(obj.columns.tolist()),
+                'data': self._clean_for_json(obj.values.tolist())
+            }
+            return df_dict
+        elif isinstance(obj, pd.Series):
+            # Convert Series to dict
+            return {
+                '_type': 'Series',
+                'index': self._clean_for_json(obj.index.tolist()),
+                'data': self._clean_for_json(obj.values.tolist()),
+                'name': obj.name
+            }
+        elif isinstance(obj, (pd.Timestamp, datetime)):
+            return obj.isoformat()
+        elif isinstance(obj, pd.Timedelta):
+            return str(obj)
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif pd.isna(obj):
+            return None
+        else:
+            return obj
+    
     def _get_file_path(self, key: CacheKey) -> Path:
         """Get the file path for a cache key."""
         subdir = self.config.cache_dir / key.get_subdir()
@@ -321,10 +383,10 @@ class CacheManager:
         
         if actual_path.suffix == ".gz":
             with gzip.open(actual_path, "wt", encoding="utf-8") as f:
-                json.dump(data, f, separators=(",", ":"))
+                json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
         else:
             with open(actual_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, separators=(",", ":"))
+                json.dump(data, f, separators=(",", ":"), cls=DateTimeEncoder)
         
         return actual_path
     

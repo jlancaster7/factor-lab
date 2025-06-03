@@ -77,47 +77,146 @@ class YahooFinanceProvider(DataProvider):
             DataFrame with dates as index and symbols as columns
         """
         try:
-            data = yf.download(
-                symbols,
-                start=start_date,
-                end=end_date,
-                progress=False,
-                auto_adjust=True,
-            )
+            # Add retry logic and better error handling
+            max_retries = 3
+            retry_delay = 2
+            
+            # For large symbol lists, batch the downloads
+            batch_size = 10
+            if len(symbols) > batch_size:
+                logger.info(f"Downloading {len(symbols)} symbols in batches of {batch_size}")
+                all_data = []
+                
+                for i in range(0, len(symbols), batch_size):
+                    batch_symbols = symbols[i:i + batch_size]
+                    logger.debug(f"Downloading batch {i//batch_size + 1}: {batch_symbols}")
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            batch_data = yf.download(
+                                batch_symbols,
+                                start=start_date,
+                                end=end_date,
+                                progress=False,
+                                auto_adjust=True,
+                                threads=False,
+                                timeout=30
+                            )
+                            
+                            if not batch_data.empty:
+                                all_data.append(batch_data)
+                                break
+                            else:
+                                logger.warning(f"Empty data for batch {batch_symbols} on attempt {attempt + 1}")
+                                
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                logger.warning(f"Batch download attempt {attempt + 1} failed: {e}. Retrying...")
+                                time.sleep(retry_delay)
+                            else:
+                                logger.error(f"Failed to download batch {batch_symbols}: {e}")
+                                # Continue with other batches instead of failing completely
+                                break
+                    
+                    # Small delay between batches
+                    time.sleep(0.5)
+                
+                # Combine all batch data
+                if all_data:
+                    data = pd.concat(all_data, axis=1)
+                    # Remove duplicate columns if any
+                    data = data.loc[:, ~data.columns.duplicated()]
+                else:
+                    data = pd.DataFrame()
+            else:
+                # Small batch, use original logic
+                for attempt in range(max_retries):
+                    try:
+                        data = yf.download(
+                            symbols,
+                            start=start_date,
+                            end=end_date,
+                            progress=False,
+                            auto_adjust=True,
+                            threads=False,
+                            timeout=30
+                        )
+                        
+                        if not data.empty:
+                            break
+                        else:
+                            logger.warning(f"Empty data returned for {symbols} on attempt {attempt + 1}")
+                            
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Download attempt {attempt + 1} failed: {e}. Retrying...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                        else:
+                            raise
 
             # Handle case where auto_adjust=True makes 'Adj Close' unavailable
             if price_type == "Adj Close" and "Adj Close" not in data.columns:
                 price_type = "Close"  # Use Close when auto_adjust=True
 
+            # Handle empty data
+            if data.empty:
+                logger.warning(f"No data downloaded for symbols: {symbols}")
+                return pd.DataFrame(columns=symbols)
+            
+            # Handle different data structures from yfinance
             if len(symbols) == 1:
                 # Single symbol case
-                if price_type in data.columns:
-                    if isinstance(data[price_type], pd.Series):
-                        return data[price_type].to_frame(symbols[0])
-                    else:
-                        # Already a DataFrame, just rename the column
+                if isinstance(data.columns, pd.MultiIndex):
+                    # Multi-level columns even for single symbol
+                    if price_type in data.columns.get_level_values(0):
                         result = data[price_type].copy()
-                        result.columns = [symbols[0]]
-                        return result
-                else:
-                    logger.error(
-                        f"Price type '{price_type}' not found in data. Available columns: {list(data.columns)}"
-                    )
-                    if isinstance(data["Close"], pd.Series):
-                        return data["Close"].to_frame(symbols[0])
+                        if isinstance(result, pd.Series):
+                            return result.to_frame(symbols[0])
+                        else:
+                            result.columns = [symbols[0]]
+                            return result
                     else:
-                        result = data["Close"].copy()
-                        result.columns = [symbols[0]]
-                        return result
+                        # Try with 'Close' as fallback
+                        result = data['Close'].copy()
+                        if isinstance(result, pd.Series):
+                            return result.to_frame(symbols[0])
+                        else:
+                            result.columns = [symbols[0]]
+                            return result
+                else:
+                    # Single-level columns
+                    if price_type in data.columns:
+                        return data[price_type].to_frame(symbols[0])
+                    elif 'Close' in data.columns:
+                        return data['Close'].to_frame(symbols[0])
+                    else:
+                        logger.error(f"No price data found for {symbols[0]}")
+                        return pd.DataFrame(columns=symbols)
             else:
                 # Multiple symbols case
-                if price_type in data.columns:
-                    return data[price_type]
+                if isinstance(data.columns, pd.MultiIndex):
+                    # Multi-level columns: (price_type, symbol)
+                    if price_type in data.columns.get_level_values(0):
+                        result = data[price_type]
+                        # Ensure column names are just symbols
+                        if isinstance(result, pd.DataFrame):
+                            return result
+                        else:
+                            return result.to_frame()
+                    else:
+                        # Try 'Close' as fallback
+                        result = data['Close']
+                        if isinstance(result, pd.DataFrame):
+                            return result
+                        else:
+                            return result.to_frame()
                 else:
-                    logger.error(
-                        f"Price type '{price_type}' not found in data. Available columns: {list(data.columns)}"
-                    )
-                    return data["Close"]  # Default to Close
+                    # Single-level columns (shouldn't happen with multiple symbols)
+                    if price_type in data.columns:
+                        return data[price_type]
+                    else:
+                        return data['Close']
 
         except Exception as e:
             logger.error(f"Error fetching data from Yahoo Finance: {e}")
@@ -557,7 +656,11 @@ class FMPProvider(DataProvider):
         limit: Optional[int] = None
     ) -> Optional[List[Dict]]:
         """
-        Fetch historical end-of-day price data from FMP with caching.
+        Fetch historical end-of-day price data from FMP with optimized caching.
+        
+        This method implements full symbol caching to avoid fragmentation.
+        Instead of caching each date range separately, it caches the full
+        available history per symbol and returns the requested subset.
         
         Parameters:
         -----------
@@ -575,52 +678,145 @@ class FMPProvider(DataProvider):
         Optional[List[Dict]]
             List of price records with date, OHLC, volume
         """
-        # Create cache key for price data
-        # Use date range as part of the key for price data
-        # Replace hyphens to avoid parsing issues
-        date_key = f"{(from_date or 'start').replace('-', '')}_{(to_date or 'end').replace('-', '')}"
-        cache_key = CacheKey(
+        # Create cache key for full history (v2.0 to distinguish from old cache)
+        full_history_key = CacheKey(
             symbol=symbol,
             statement_type="price",
-            period="daily",
-            fiscal_date=date_key,  # Use date range as fiscal_date
-            version=self.cache_config.cache_version
+            period="full_history",
+            fiscal_date="all",
+            version="2.0"  # New version for optimized cache
         )
         
-        # Try to get from cache first
-        cached_data = self.cache.get(cache_key)
-        if cached_data is not None:
-            logger.debug(f"Cache hit for {symbol} price data ({date_key})")
-            return cached_data
+        # Try to get full history from cache
+        cached_full_history = self.cache.get(full_history_key)
         
-        # Cache miss - fetch from API
-        logger.debug(f"Cache miss for {symbol} price data ({date_key})")
+        if cached_full_history is not None:
+            logger.debug(f"Cache hit for {symbol} full price history")
+            
+            # Filter to requested date range if needed
+            if from_date or to_date:
+                filtered_data = []
+                from_dt = pd.to_datetime(from_date) if from_date else pd.Timestamp.min
+                to_dt = pd.to_datetime(to_date) if to_date else pd.Timestamp.max
+                
+                for record in cached_full_history:
+                    record_date = pd.to_datetime(record['date'])
+                    if from_dt <= record_date <= to_dt:
+                        filtered_data.append(record)
+                
+                logger.debug(f"Filtered {len(filtered_data)} records from cached {len(cached_full_history)} records")
+                return filtered_data
+            else:
+                return cached_full_history
+        
+        # Cache miss - fetch full history from API
+        logger.info(f"Cache miss for {symbol} price data - fetching full history")
         
         url = f"{self.base_url}/historical-price-full/{symbol}"
         params = {}
         
-        # Add date parameters if provided
-        if from_date:
-            params["from"] = from_date
-        if to_date:
-            params["to"] = to_date
-            
+        # Fetch full available history (no date params)
+        # FMP returns max 5 years by default, which is sufficient for most use cases
         data = self._make_request(url, params)
         
         # FMP returns data in a nested structure
         if data and isinstance(data, dict) and "historical" in data:
-            historical_data = data["historical"]
-            logger.debug(f"Fetched {len(historical_data)} price records for {symbol}")
+            full_history = data["historical"]
+            logger.info(f"Fetched {len(full_history)} price records for {symbol} (full history)")
             
-            # Cache the historical data
-            if historical_data:
-                self.cache.set(cache_key, historical_data)
-                logger.debug(f"Cached {symbol} price data")
+            # Cache the full history
+            if full_history:
+                self.cache.set(full_history_key, full_history)
+                logger.info(f"Cached {symbol} full price history ({len(full_history)} records)")
             
-            return historical_data
+            # Filter to requested date range if needed
+            if from_date or to_date:
+                filtered_data = []
+                from_dt = pd.to_datetime(from_date) if from_date else pd.Timestamp.min
+                to_dt = pd.to_datetime(to_date) if to_date else pd.Timestamp.max
+                
+                for record in full_history:
+                    record_date = pd.to_datetime(record['date'])
+                    if from_dt <= record_date <= to_dt:
+                        filtered_data.append(record)
+                
+                logger.debug(f"Returning {len(filtered_data)} records for requested range")
+                return filtered_data
+            else:
+                return full_history
         else:
             logger.warning(f"No historical price data found for {symbol}")
             return None
+    
+    def _update_price_cache_if_stale(self, symbol: str) -> bool:
+        """
+        Check if price cache needs updating and update if necessary.
+        
+        This method checks if the cached price data is up to date.
+        If the latest cached date is more than 1 day old, it fetches
+        recent data and appends to the cache.
+        
+        Parameters:
+        -----------
+        symbol : str
+            Stock symbol
+            
+        Returns:
+        --------
+        bool
+            True if cache was updated, False otherwise
+        """
+        full_history_key = CacheKey(
+            symbol=symbol,
+            statement_type="price",
+            period="full_history",
+            fiscal_date="all",
+            version="2.0"
+        )
+        
+        cached_data = self.cache.get(full_history_key)
+        if not cached_data:
+            return False
+        
+        # Check latest date in cache
+        latest_cached_date = pd.to_datetime(cached_data[0]['date'])  # FMP returns newest first
+        today = pd.to_datetime(datetime.now().date())
+        
+        # If cache is current (within 1 trading day), no update needed
+        if (today - latest_cached_date).days <= 1:
+            return False
+        
+        logger.info(f"Price cache for {symbol} is stale (latest: {latest_cached_date}), updating...")
+        
+        # Fetch recent data
+        from_date = (latest_cached_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        to_date = today.strftime("%Y-%m-%d")
+        
+        url = f"{self.base_url}/historical-price-full/{symbol}"
+        params = {"from": from_date, "to": to_date}
+        
+        data = self._make_request(url, params)
+        
+        if data and isinstance(data, dict) and "historical" in data:
+            new_records = data["historical"]
+            if new_records:
+                # Merge new records with existing cache (remove duplicates)
+                existing_dates = {record['date'] for record in cached_data}
+                
+                # Add new records that aren't already in cache
+                records_added = 0
+                for record in new_records:
+                    if record['date'] not in existing_dates:
+                        cached_data.insert(0, record)  # Insert at beginning (newest first)
+                        records_added += 1
+                
+                if records_added > 0:
+                    # Update cache
+                    self.cache.set(full_history_key, cached_data)
+                    logger.info(f"Updated {symbol} price cache with {records_added} new records")
+                    return True
+        
+        return False
 
     # === Story 3.2: Cache Management Methods ===
     
@@ -653,7 +849,7 @@ class FMPProvider(DataProvider):
             self.cache.clear_all()
             logger.info("Cleared all cache")
     
-    def warm_cache(self, symbols: List[str], statement_types: Optional[List[str]] = None):
+    def warm_cache(self, symbols: List[str], statement_types: Optional[List[str]] = None, include_prices: bool = True):
         """
         Pre-warm cache for a list of symbols.
         
@@ -663,6 +859,8 @@ class FMPProvider(DataProvider):
             List of symbols to cache
         statement_types : Optional[List[str]]
             Specific statement types to cache (default: all)
+        include_prices : bool
+            Whether to cache price data (default: True)
         """
         if statement_types is None:
             statement_types = ["income_statement", "balance_sheet", "cash_flow", "financial_ratios"]
@@ -670,6 +868,7 @@ class FMPProvider(DataProvider):
         logger.info(f"Warming cache for {len(symbols)} symbols")
         
         for symbol in symbols:
+            # Cache financial statements
             for stmt_type in statement_types:
                 try:
                     if stmt_type == "income_statement":
@@ -682,9 +881,110 @@ class FMPProvider(DataProvider):
                         self._fetch_financial_ratios(symbol, limit=20)
                 except Exception as e:
                     logger.error(f"Error warming cache for {symbol} {stmt_type}: {e}")
+            
+            # Cache price data (full history)
+            if include_prices:
+                try:
+                    logger.info(f"Caching full price history for {symbol}")
+                    self._fetch_historical_prices(symbol)  # No date range = full history
+                except Exception as e:
+                    logger.error(f"Error caching price data for {symbol}: {e}")
         
         stats = self.get_cache_stats()
         logger.info(f"Cache warming complete. Hit rate: {stats.get('hit_rate', 0):.2%}")
+    
+    def clear_old_price_cache(self):
+        """
+        Clear old fragmented price cache files (v1.0).
+        This removes the thousands of small date-range cache files
+        to make room for the new optimized full-history cache.
+        """
+        try:
+            cache_dir = self.cache_config.cache_dir / "price_data"
+            if not cache_dir.exists():
+                logger.info("No price cache directory found")
+                return
+            
+            # Count files before cleanup
+            old_files = list(cache_dir.glob("*v1.0.json*"))
+            file_count = len(old_files)
+            
+            if file_count == 0:
+                logger.info("No old price cache files found")
+                return
+            
+            logger.info(f"Found {file_count} old price cache files to remove")
+            
+            # Remove old cache files
+            removed_count = 0
+            for file_path in old_files:
+                try:
+                    file_path.unlink()
+                    removed_count += 1
+                except Exception as e:
+                    logger.warning(f"Could not remove {file_path}: {e}")
+            
+            logger.info(f"Removed {removed_count}/{file_count} old price cache files")
+            
+            # Also clear any corrupted cache entries from memory
+            if hasattr(self.cache, '_cache'):
+                # Remove any in-memory entries for old price cache
+                keys_to_remove = []
+                for key in self.cache._cache.keys():
+                    if hasattr(key, 'statement_type') and key.statement_type == "price" and key.version == "1.0":
+                        keys_to_remove.append(key)
+                
+                for key in keys_to_remove:
+                    del self.cache._cache[key]
+                
+                if keys_to_remove:
+                    logger.info(f"Cleared {len(keys_to_remove)} old price cache entries from memory")
+                    
+        except Exception as e:
+            logger.error(f"Error clearing old price cache: {e}")
+    
+    def migrate_price_cache(self, symbols: Optional[List[str]] = None):
+        """
+        Migrate from old fragmented price cache to new full-history cache.
+        
+        Parameters:
+        -----------
+        symbols : Optional[List[str]]
+            Specific symbols to migrate (default: None = migrate all)
+        """
+        logger.info("Starting price cache migration to optimized format")
+        
+        # First, clear old cache to free up space
+        self.clear_old_price_cache()
+        
+        # If symbols not specified, get from existing cache or use defaults
+        if symbols is None:
+            # Try to get symbols from existing statement cache
+            cache_dir = self.cache_config.cache_dir / "income_statements"
+            if cache_dir.exists():
+                symbols = []
+                for file_path in cache_dir.glob("*_income_statement_*.json*"):
+                    symbol = file_path.name.split("_")[0]
+                    if symbol not in symbols:
+                        symbols.append(symbol)
+                logger.info(f"Found {len(symbols)} symbols in existing cache")
+            else:
+                logger.warning("No symbols found in cache, skipping migration")
+                return
+        
+        # Warm cache with full price history for each symbol
+        logger.info(f"Migrating price cache for {len(symbols)} symbols")
+        success_count = 0
+        
+        for i, symbol in enumerate(symbols):
+            try:
+                logger.info(f"[{i+1}/{len(symbols)}] Caching full price history for {symbol}")
+                self._fetch_historical_prices(symbol)
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to cache price history for {symbol}: {e}")
+        
+        logger.info(f"Price cache migration complete: {success_count}/{len(symbols)} symbols cached")
     
     # === Story 3.3: Cache Performance Optimization ===
     
