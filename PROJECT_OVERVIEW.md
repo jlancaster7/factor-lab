@@ -494,7 +494,7 @@ fundamental_data = fmp_provider.get_fundamental_data(
 ## 📚 **Key References**
 
 ### **Internal Documentation**
-- `src/factor_lab/data/fmp_implementation_plan.md`: Detailed implementation roadmap
+- `fmp_implementation_plan.md`: Detailed implementation roadmap
 - `config/environments.yaml.example`: Configuration template
 - `notebooks/fundamental_factors.ipynb`: Target integration notebook
 
@@ -569,7 +569,7 @@ poetry run python -m pytest tests/ -v          # Run full test suite
 - **Main Implementation**: `src/factor_lab/data/__init__.py` (FMPProvider class)
 - **Test Suite**: `tests/test_*.py` files
 - **Configuration**: `config/environments.yaml`
-- **Progress Tracking**: `src/factor_lab/data/fmp_implementation_plan.md`
+- **Progress Tracking**: `fmp_implementation_plan.md`
 
 ### **Critical Context**
 - **Epic 1**: Foundation complete and solid ✅
